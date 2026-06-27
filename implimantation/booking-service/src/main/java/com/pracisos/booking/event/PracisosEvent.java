@@ -11,17 +11,19 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 public class PracisosEvent<T> {
+    private UUID eventId;
     private String eventType;
     private UUID tenantId;
-    private String traceId;
     private Instant timestamp;
+    private String traceId;
     private T payload;
 
     public PracisosEvent(String eventType, UUID tenantId, String traceId, T payload) {
+        this.eventId = UUID.randomUUID();
         this.eventType = eventType;
         this.tenantId = tenantId;
+        this.timestamp = Instant.now();
         this.traceId = traceId;
         this.payload = payload;
-        this.timestamp = Instant.now();
     }
 }

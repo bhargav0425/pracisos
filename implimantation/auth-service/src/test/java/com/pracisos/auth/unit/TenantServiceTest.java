@@ -6,7 +6,7 @@ import com.pracisos.auth.domain.repository.TenantRepository;
 import com.pracisos.auth.dto.request.TenantCreateRequest;
 import com.pracisos.auth.dto.response.TenantResponse;
 import com.pracisos.auth.event.EventPublisher;
-import com.pracisos.auth.event.TenantCreatedEvent;
+import com.pracisos.auth.event.payload.TenantCreatedPayload;
 import com.pracisos.auth.exception.DuplicateSlugException;
 import com.pracisos.auth.exception.TenantNotFoundException;
 import com.pracisos.auth.service.TenantService;
@@ -17,7 +17,6 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -62,7 +61,7 @@ class TenantServiceTest {
         assertEquals("ACTIVE", response.status());
 
         verify(tenantRepository).save(any(Tenant.class));
-        verify(eventPublisher).publishTenantCreated(any(TenantCreatedEvent.class));
+        verify(eventPublisher).publishTenantCreated(any(TenantCreatedPayload.class));
     }
 
     @Test
@@ -72,7 +71,7 @@ class TenantServiceTest {
         assertThrows(DuplicateSlugException.class, () -> tenantService.createTenant(createRequest));
 
         verify(tenantRepository, never()).save(any(Tenant.class));
-        verify(eventPublisher, never()).publishTenantCreated(any(TenantCreatedEvent.class));
+        verify(eventPublisher, never()).publishTenantCreated(any(TenantCreatedPayload.class));
     }
 
     @Test

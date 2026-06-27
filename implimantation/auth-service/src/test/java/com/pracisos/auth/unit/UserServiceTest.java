@@ -7,9 +7,12 @@ import com.pracisos.auth.domain.enums.UserStatus;
 import com.pracisos.auth.domain.repository.TenantRepository;
 import com.pracisos.auth.domain.repository.UserRepository;
 import com.pracisos.auth.dto.request.UserInviteRequest;
+import com.pracisos.auth.dto.request.UserUpdateRequest;
 import com.pracisos.auth.dto.response.UserResponse;
 import com.pracisos.auth.event.EventPublisher;
-import com.pracisos.auth.event.UserCreatedEvent;
+import com.pracisos.auth.event.payload.UserCreatedPayload;
+import com.pracisos.auth.event.payload.UserDeactivatedPayload;
+import com.pracisos.auth.event.payload.UserUpdatedPayload;
 import com.pracisos.auth.exception.TenantNotFoundException;
 import com.pracisos.auth.service.UserService;
 import org.junit.jupiter.api.BeforeEach;
@@ -83,7 +86,7 @@ class UserServiceTest {
         assertEquals("PRACTITIONER", response.role());
 
         verify(userRepository).save(any(User.class));
-        verify(eventPublisher).publishUserCreated(any(UserCreatedEvent.class));
+        verify(eventPublisher).publishUserCreated(any(UserCreatedPayload.class));
     }
 
     @Test
@@ -93,7 +96,7 @@ class UserServiceTest {
         assertThrows(TenantNotFoundException.class, () -> userService.inviteUser(tenantId, inviteRequest));
 
         verify(userRepository, never()).save(any(User.class));
-        verify(eventPublisher, never()).publishUserCreated(any(UserCreatedEvent.class));
+        verify(eventPublisher, never()).publishUserCreated(any(UserCreatedPayload.class));
     }
 
     @Test
@@ -104,7 +107,49 @@ class UserServiceTest {
         assertThrows(RuntimeException.class, () -> userService.inviteUser(tenantId, inviteRequest));
 
         verify(userRepository, never()).save(any(User.class));
-        verify(eventPublisher, never()).publishUserCreated(any(UserCreatedEvent.class));
+        verify(eventPublisher, never()).publishUserCreated(any(UserCreatedPayload.class));
+    }
+
+    @Test
+    void updateUser_Success() {
+        UserUpdateRequest updateRequest = new UserUpdateRequest("Bobby", "Jones", "dr.bob@maple-health.com", UserStatus.ACTIVE);
+        when(userRepository.findById(testUser.getUserId())).thenReturn(Optional.of(testUser));
+        when(userRepository.save(any(User.class))).thenAnswer(i -> i.getArgument(0));
+
+        UserResponse response = userService.updateUser(tenantId, testUser.getUserId(), updateRequest);
+
+        assertNotNull(response);
+        assertEquals("Bobby", response.firstName());
+        assertEquals("ACTIVE", response.status());
+        verify(eventPublisher).publishUserUpdated(any(UserUpdatedPayload.class));
+    }
+
+    @Test
+    void updateUser_CrossTenant_ThrowsException() {
+        UserUpdateRequest updateRequest = new UserUpdateRequest("Bobby", "Jones", "dr.bob@maple-health.com", UserStatus.ACTIVE);
+        when(userRepository.findById(testUser.getUserId())).thenReturn(Optional.of(testUser));
+
+        assertThrows(RuntimeException.class, () -> userService.updateUser(UUID.randomUUID(), testUser.getUserId(), updateRequest));
+        verify(userRepository, never()).save(any(User.class));
+    }
+
+    @Test
+    void deactivateUser_Success() {
+        when(userRepository.findById(testUser.getUserId())).thenReturn(Optional.of(testUser));
+
+        userService.deactivateUser(tenantId, testUser.getUserId(), "No longer with clinic");
+
+        assertEquals(UserStatus.INACTIVE, testUser.getStatus());
+        verify(userRepository).save(testUser);
+        verify(eventPublisher).publishUserDeactivated(any(UserDeactivatedPayload.class));
+    }
+
+    @Test
+    void deactivateUser_CrossTenant_ThrowsException() {
+        when(userRepository.findById(testUser.getUserId())).thenReturn(Optional.of(testUser));
+
+        assertThrows(RuntimeException.class, () -> userService.deactivateUser(UUID.randomUUID(), testUser.getUserId(), "No longer with clinic"));
+        verify(userRepository, never()).save(any(User.class));
     }
 
     @Test

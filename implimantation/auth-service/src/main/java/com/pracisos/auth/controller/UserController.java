@@ -1,6 +1,7 @@
 package com.pracisos.auth.controller;
 
 import com.pracisos.auth.dto.request.UserInviteRequest;
+import com.pracisos.auth.dto.request.UserUpdateRequest;
 import com.pracisos.auth.dto.response.UserResponse;
 import com.pracisos.auth.service.UserService;
 import jakarta.validation.Valid;
@@ -38,5 +39,26 @@ public class UserController {
         @RequestAttribute("tenantId") UUID tenantId
     ) {
         return ResponseEntity.ok(userService.getUsersByTenant(tenantId));
+    }
+
+    @PutMapping("/users/{id}")
+    @PreAuthorize("hasRole('CLINIC_OWNER')")
+    public ResponseEntity<UserResponse> updateUser(
+        @RequestAttribute("tenantId") UUID tenantId,
+        @PathVariable UUID id,
+        @Valid @RequestBody UserUpdateRequest request
+    ) {
+        return ResponseEntity.ok(userService.updateUser(tenantId, id, request));
+    }
+
+    @DeleteMapping("/users/{id}")
+    @PreAuthorize("hasRole('CLINIC_OWNER')")
+    public ResponseEntity<Void> deactivateUser(
+        @RequestAttribute("tenantId") UUID tenantId,
+        @PathVariable UUID id,
+        @RequestParam(required = false, defaultValue = "Deactivated by admin") String reason
+    ) {
+        userService.deactivateUser(tenantId, id, reason);
+        return ResponseEntity.noContent().build();
     }
 }
