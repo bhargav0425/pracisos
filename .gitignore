@@ -1,0 +1,53 @@
+# Java / Maven
+target/
+*.class
+*.jar
+*.war
+*.ear
+*.zip
+*.tar.gz
+.mvn/
+.metadata/
+.classpath
+.project
+.settings/
+.factorypath
+dependency-reduced-pom.xml
+
+# Node / Frontend
+node_modules/
+dist/
+build/
+.env
+.env.local
+.env.*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.eslintcache
+.stylelintcache
+.vite-inspect
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*~
+*.iml
+
+# Operating System
+.DS_Store
+Thumbs.db
+desktop.ini
+*Zone.Identifier*
+*:Zone.Identifier
+
+# Testing & Coverage
+coverage/
+.nyc_output/
+htmlcov/
+*.log
