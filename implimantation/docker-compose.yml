@@ -55,6 +55,24 @@ services:
       timeout: 5s
       retries: 5
 
+  # --- Billing Database ---
+  postgres-billing:
+    image: postgres:16-alpine
+    container_name: pracisos-billing-db
+    environment:
+      POSTGRES_DB: billing_db
+      POSTGRES_USER: billing_user
+      POSTGRES_PASSWORD: billing_pass
+    ports:
+      - "5436:5432"
+    volumes:
+      - billing_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U billing_user -d billing_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   # --- Redis Cache ---
   redis:
     image: redis:7-alpine
@@ -161,6 +179,30 @@ services:
       kafka:
         condition: service_healthy
 
+  # --- Billing Service ---
+  billing-service:
+    build:
+      context: .
+      dockerfile: billing-service/Dockerfile
+    container_name: pracisos-billing-service
+    environment:
+      DB_HOST: postgres-billing
+      DB_PORT: 5432
+      DB_NAME: billing_db
+      DB_USER: billing_user
+      DB_PASSWORD: billing_pass
+      JWT_SECRET: your-256-bit-secret-key-here-change-in-production-your-256-bit-secret-key-here-change-in-production
+      KAFKA_BOOTSTRAP: kafka:29092
+      STRIPE_SECRET_KEY: sk_test_placeholder
+      STRIPE_WEBHOOK_SECRET: whsec_placeholder
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres-billing:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
   # --- Frontend SPA (Nginx) ---
   frontend:
     build:
@@ -173,8 +215,10 @@ services:
       - auth-service
       - booking-service
       - charting-service
+      - billing-service
 
 volumes:
   auth_postgres_data:
   booking_postgres_data:
   charting_postgres_data:
+  billing_postgres_data:

@@ -13,13 +13,16 @@ import {
   PlusCircle, 
   Info,
   Activity,
-  CheckCircle2
+  CheckCircle2,
+  CreditCard
 } from 'lucide-react';
 import { useGetTenantQuery } from '../api';
 import { BookingForm } from '../../booking/components/BookingForm';
 import { BookingList } from '../../booking/components/BookingList';
 import { BookingDetailModal } from '../../booking/components/BookingDetailModal';
 import { NoteList } from '../../charting/components/NoteList';
+import { InvoiceList } from '../../billing/components/InvoiceList';
+import { RevenueDashboard } from '../../billing/components/RevenueDashboard';
 import { 
   useGetBookingsQuery, 
   useCancelBookingMutation, 
@@ -34,7 +37,7 @@ export function ClinicDashboard() {
   const dispatch = useDispatch();
   const navigate = useNavigate();
 
-  const [activeTab, setActiveTab] = useState<'appointments' | 'book' | 'staff' | 'charting'>(
+  const [activeTab, setActiveTab] = useState<'appointments' | 'book' | 'staff' | 'charting' | 'billing'>(
     user?.role === 'CLINIC_OWNER' ? 'staff' : 'appointments'
   );
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
@@ -173,6 +176,19 @@ export function ClinicDashboard() {
             <Activity className="w-4 h-4 mr-2" /> Clinical Charting
           </button>
         )}
+
+        {(isPatient || isOwner) && (
+          <button
+            onClick={() => setActiveTab('billing')}
+            className={`flex items-center px-4 py-2.5 font-semibold text-sm border-b-2 transition-all ${
+              activeTab === 'billing'
+                ? 'border-teal-600 text-teal-600'
+                : 'border-transparent text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <CreditCard className="w-4 h-4 mr-2" /> {isOwner ? 'Revenue & Billing' : 'Billing & Invoices'}
+          </button>
+        )}
       </div>
 
       {/* Tab Content */}
@@ -244,6 +260,16 @@ export function ClinicDashboard() {
               />
             ) : (
               <p className="text-sm text-slate-400 italic">Please select a patient to view or edit their clinical SOAP notes history.</p>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'billing' && (
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-6 md:p-8 shadow-sm animate-fadeIn">
+            {isOwner ? (
+              <RevenueDashboard />
+            ) : (
+              <InvoiceList userRole={user?.role || ''} />
             )}
           </div>
         )}
