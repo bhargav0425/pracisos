@@ -1,11 +1,31 @@
+import { useState } from 'react';
 import { UserInviteForm } from './UserInviteForm';
 import { UserList } from './UserList';
 import { useAuth } from '../../../shared/hooks/useAuth';
 import { useDispatch } from 'react-redux';
 import { logout } from '../slice';
 import { useNavigate, useParams } from 'react-router-dom';
-import { LogOut, LayoutDashboard, Calendar, ShieldCheck, CreditCard } from 'lucide-react';
+import { 
+  LogOut, 
+  Calendar, 
+  Users, 
+  Clock, 
+  PlusCircle, 
+  Info,
+  Activity,
+  CheckCircle2
+} from 'lucide-react';
 import { useGetTenantQuery } from '../api';
+import { BookingForm } from '../../booking/components/BookingForm';
+import { BookingList } from '../../booking/components/BookingList';
+import { BookingDetailModal } from '../../booking/components/BookingDetailModal';
+import { 
+  useGetBookingsQuery, 
+  useCancelBookingMutation, 
+  useCompleteBookingMutation, 
+  useMarkNoShowMutation,
+  Booking 
+} from '../../booking/api';
 
 export function ClinicDashboard() {
   const { user } = useAuth();
@@ -13,16 +33,57 @@ export function ClinicDashboard() {
   const dispatch = useDispatch();
   const navigate = useNavigate();
 
+  const [activeTab, setActiveTab] = useState<'appointments' | 'book' | 'staff'>(
+    user?.role === 'CLINIC_OWNER' ? 'staff' : 'appointments'
+  );
+  const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
   const { data: tenant } = useGetTenantQuery(tenantSlug || '', {
     skip: !tenantSlug || user?.role === 'SYSTEM_ADMIN',
   });
+
+  const { data: bookings = [], refetch: refetchBookings } = useGetBookingsQuery(undefined, {
+    skip: !user || user.role === 'SYSTEM_ADMIN'
+  });
+
+  const [cancelBooking] = useCancelBookingMutation();
+  const [completeBooking] = useCompleteBookingMutation();
+  const [markNoShow] = useMarkNoShowMutation();
 
   const handleLogout = () => {
     dispatch(logout());
     navigate('/login');
   };
 
+  const handleCancel = async (reason: string) => {
+    if (selectedBooking) {
+      await cancelBooking({ bookingId: selectedBooking.bookingId, reason }).unwrap();
+      setIsModalOpen(false);
+      refetchBookings();
+    }
+  };
+
+  const handleComplete = async () => {
+    if (selectedBooking) {
+      await completeBooking(selectedBooking.bookingId).unwrap();
+      setIsModalOpen(false);
+      refetchBookings();
+    }
+  };
+
+  const handleNoShow = async () => {
+    if (selectedBooking) {
+      await markNoShow(selectedBooking.bookingId).unwrap();
+      setIsModalOpen(false);
+      refetchBookings();
+    }
+  };
+
   const isOwner = user?.role === 'CLINIC_OWNER';
+  const isPatient = user?.role === 'PATIENT';
+  const isReceptionist = user?.role === 'RECEPTIONIST';
+  const isPractitioner = user?.role === 'PRACTITIONER';
 
   return (
     <div className="min-h-screen p-6 md:p-10 text-slate-700 bg-[#f4f7f6]">
@@ -36,66 +97,118 @@ export function ClinicDashboard() {
           <h1 className="text-3xl font-extrabold tracking-tight text-slate-800 mt-1">
             {tenant ? tenant.name : user?.tenantSlug ? user.tenantSlug.toUpperCase().replace('-', ' ') : 'Practice Management'}
           </h1>
-          <p className="text-slate-500 text-sm mt-0.5">Welcome back, {user?.fullName} ({user?.role})</p>
+          <p className="text-slate-500 text-sm mt-0.5">Welcome back, {user?.fullName} (<span className="font-semibold text-teal-600">{user?.role}</span>)</p>
         </div>
 
-        <button
-          onClick={handleLogout}
-          className="self-start flex items-center px-4 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-slate-800 rounded-xl shadow-sm transition-all active:scale-95 text-sm"
-        >
-          <LogOut className="w-4 h-4 mr-2" />
-          Sign Out
-        </button>
+        <div className="flex items-center space-x-3">
+          <button
+            onClick={handleLogout}
+            className="flex items-center px-4 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-slate-800 rounded-xl shadow-sm transition-all active:scale-95 text-sm"
+          >
+            <LogOut className="w-4 h-4 mr-2" />
+            Sign Out
+          </button>
+        </div>
       </header>
 
-      {isOwner ? (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-1">
-            <UserInviteForm />
-          </div>
-          <div className="lg:col-span-2">
-            <UserList />
-          </div>
-        </div>
-      ) : (
-        <div className="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="md:col-span-3 p-8 rounded-2xl bg-white border border-slate-200/80 shadow-xl shadow-slate-100/50 flex flex-col items-center justify-center text-center space-y-4">
-            <div className="p-4 bg-teal-50 border border-teal-100 text-teal-600 rounded-full">
-              <LayoutDashboard className="w-10 h-10" />
-            </div>
-            <div className="max-w-md">
-              <h2 className="text-2xl font-bold text-slate-800">Dashboard Under Development</h2>
-              <p className="text-slate-500 text-sm mt-2">
-                You have successfully authenticated as a <span className="font-semibold text-teal-600">{user?.role}</span>. Subsequent development phases will build your custom dashboard slice.
-              </p>
-            </div>
-          </div>
+      {/* Navigation Tabs */}
+      <div className="flex space-x-2 border-b border-slate-200 mb-8 overflow-x-auto pb-px">
+        {isOwner && (
+          <button
+            onClick={() => setActiveTab('staff')}
+            className={`flex items-center px-4 py-2.5 font-semibold text-sm border-b-2 transition-all ${
+              activeTab === 'staff'
+                ? 'border-teal-600 text-teal-600'
+                : 'border-transparent text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <Users className="w-4 h-4 mr-2" /> Staff Directory
+          </button>
+        )}
 
-          <div className="p-6 rounded-xl bg-white border border-slate-200/60 shadow-sm flex items-start space-x-4">
-            <Calendar className="w-6 h-6 text-teal-500 shrink-0 mt-1" />
-            <div>
-              <h4 className="font-bold text-slate-800">Booking Service</h4>
-              <p className="text-slate-500 text-xs mt-1">Availability templates, practitioner caches, and appointment bookings will run here in Phase 2.</p>
-            </div>
-          </div>
+        <button
+          onClick={() => setActiveTab('appointments')}
+          className={`flex items-center px-4 py-2.5 font-semibold text-sm border-b-2 transition-all ${
+            activeTab === 'appointments'
+              ? 'border-teal-600 text-teal-600'
+              : 'border-transparent text-slate-400 hover:text-slate-600'
+          }`}
+        >
+          <Clock className="w-4 h-4 mr-2" /> Appointments
+        </button>
 
-          <div className="p-6 rounded-xl bg-white border border-slate-200/60 shadow-sm flex items-start space-x-4">
-            <ShieldCheck className="w-6 h-6 text-teal-500 shrink-0 mt-1" />
-            <div>
-              <h4 className="font-bold text-slate-800">Charting Service</h4>
-              <p className="text-slate-400 text-xs mt-1">Clinical notes, draft saving with autosave, and immutable document locking will run in Phase 4.</p>
-            </div>
-          </div>
+        {(isPatient || isReceptionist) && (
+          <button
+            onClick={() => setActiveTab('book')}
+            className={`flex items-center px-4 py-2.5 font-semibold text-sm border-b-2 transition-all ${
+              activeTab === 'book'
+                ? 'border-teal-600 text-teal-600'
+                : 'border-transparent text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <PlusCircle className="w-4 h-4 mr-2" /> Book Appointment
+          </button>
+        )}
+      </div>
 
-          <div className="p-6 rounded-xl bg-white border border-slate-200/60 shadow-sm flex items-start space-x-4">
-            <CreditCard className="w-6 h-6 text-teal-500 shrink-0 mt-1" />
-            <div>
-              <h4 className="font-bold text-slate-800">Billing Service</h4>
-              <p className="text-slate-500 text-xs mt-1">Invoices, Stripe payments integration, and revenue analytics dashboard will run in Phase 5.</p>
+      {/* Tab Content */}
+      <div className="space-y-6">
+        {activeTab === 'staff' && isOwner && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div className="lg:col-span-1">
+              <UserInviteForm />
+            </div>
+            <div className="lg:col-span-2">
+              <UserList />
             </div>
           </div>
-        </div>
-      )}
+        )}
+
+        {activeTab === 'appointments' && (
+          <div className="space-y-6">
+            <div className="rounded-2xl border border-slate-200/80 bg-white p-6 md:p-8 shadow-sm">
+              <h3 className="text-xl font-bold text-slate-800 mb-5 flex items-center">
+                <Calendar className="w-5 h-5 mr-2.5 text-teal-600" /> 
+                {isPatient ? 'My Appointments' : isPractitioner ? 'My Schedule' : 'All Clinic Bookings'}
+              </h3>
+              <BookingList 
+                bookings={bookings} 
+                onCancel={(booking) => {
+                  setSelectedBooking(booking);
+                  setIsModalOpen(true);
+                }}
+                onComplete={(booking) => {
+                  setSelectedBooking(booking);
+                  setIsModalOpen(true);
+                }}
+                onNoShow={(booking) => {
+                  setSelectedBooking(booking);
+                  setIsModalOpen(true);
+                }}
+                userRole={user?.role || ''}
+              />
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'book' && (isPatient || isReceptionist) && (
+          <BookingForm />
+        )}
+      </div>
+
+      {/* Detail & Action Modal */}
+      <BookingDetailModal
+        booking={selectedBooking}
+        isOpen={isModalOpen}
+        onClose={() => {
+          setIsModalOpen(false);
+          setSelectedBooking(null);
+        }}
+        onCancel={handleCancel}
+        onComplete={handleComplete}
+        onNoShow={handleNoShow}
+        userRole={user?.role || ''}
+      />
     </div>
   );
 }

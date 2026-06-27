@@ -1,0 +1,1211 @@
+
+phase4 = """# PRACISOS PLATFORM
+## CHARTING-SERVICE IMPLEMENTATION GUIDE
+### Phase 4: Clinical Notes, Draft Autosave, Auto-Lock, Amendments
+
+---
+
+## DOCUMENT CONTROL
+
+| Field | Value |
+|-------|-------|
+| **Version** | 1.0.0 |
+| **Status** | READY FOR IMPLEMENTATION |
+| **Date** | 2026-06-27 |
+| **Phase** | 4 of 7 |
+| **Service** | charting-service |
+| **Scope** | Clinical Notes, Draft Autosave, 24h Auto-Lock, Amendments, Immutability |
+| **Prerequisite** | Master Specification v1.0.0, Auth-Service Guide, Booking-Service Guide, Event Wiring Guide |
+
+---
+
+## 1. GOAL
+
+Build the `charting-service` with its frontend slice that enables:
+- **PRACTITIONER** to create, edit, and lock clinical notes tied to appointments
+- **Draft autosave** every 30 seconds while editing
+- **24-hour auto-lock** — notes automatically become immutable after 24h
+- **Amendments** — append-only corrections to locked notes (original never modified)
+- **Event consumption** — listens to `BookingConfirmedV1` and `BookingCancelledV1`
+- **Zero cross-tenant data leakage** — every query filtered by `tenant_id`
+
+**Validation:** Book appointment → note auto-created as DRAFT → practitioner edits → locks → amendment added → original content unchanged.
+
+---
+
+## 2. WHAT YOU WILL BUILD
+
+### 2.1 Backend (Java 21 + Spring Boot 3.3)
+
+```
+charting-service/
+├── pom.xml
+├── src/
+│   ├── main/java/com/pracisos/charting/
+│   │   ├── ChartingServiceApplication.java
+│   │   ├── config/
+│   │   │   ├── SecurityConfig.java
+│   │   │   ├── KafkaConsumerConfig.java
+│   │   │   └── SchedulingConfig.java
+│   │   ├── controller/
+│   │   │   └── ChartingController.java
+│   │   ├── domain/
+│   │   │   ├── entity/
+│   │   │   │   ├── ClinicalNote.java
+│   │   │   │   └── Amendment.java
+│   │   │   ├── repository/
+│   │   │   │   ├── ClinicalNoteRepository.java
+│   │   │   │   └── AmendmentRepository.java
+│   │   │   └── enums/
+│   │   │       └── NoteStatus.java
+│   │   ├── dto/
+│   │   │   ├── request/
+│   │   │   │   ├── SaveDraftRequest.java
+│   │   │   │   └── AddAmendmentRequest.java
+│   │   │   └── response/
+│   │   │       ├── NoteResponse.java
+│   │   │       └── AmendmentResponse.java
+│   │   ├── service/
+│   │   │   ├── ClinicalNoteService.java
+│   │   │   ├── AutoLockService.java
+│   │   │   └── EventConsumerService.java
+│   │   ├── security/
+│   │   │   ├── JwtAuthenticationFilter.java
+│   │   │   └── CustomUserDetailsService.java
+│   │   ├── event/
+│   │   │   ├── EventPublisher.java
+│   │   │   ├── ClinicalNoteLockedEvent.java
+│   │   │   └── ClinicalNoteAmendedEvent.java
+│   │   └── exception/
+│   │       ├── GlobalExceptionHandler.java
+│   │       ├── NoteNotFoundException.java
+│   │       └── NoteLockedException.java
+│   └── resources/
+│       ├── application.yml
+│       └── db/migration/
+│           ├── V1__init.sql
+│           └── V2__add_amendments.sql
+└── Dockerfile
+```
+
+### 2.2 Frontend (React 19 + Vite)
+
+```
+frontend/src/features/charting/
+├── components/
+│   ├── NoteEditor.tsx          # Rich text editor with autosave
+│   ├── NoteList.tsx            # List of notes per patient
+│   ├── NoteDetail.tsx          # View locked note + amendments
+│   ├── AmendmentPanel.tsx      # Add/view amendments
+│   ├── AutoSaveIndicator.tsx   # "Saving... / Saved / Unsaved changes"
+│   └── LockButton.tsx          # Manual lock action
+├── api.ts
+├── slice.ts
+└── types.ts
+```
+
+---
+
+## 3. DATABASE DESIGN
+
+### 3.1 Flyway Migration V1__init.sql
+
+```sql
+CREATE TABLE IF NOT EXISTS clinical_notes (
+    note_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    patient_id UUID NOT NULL,
+    practitioner_id UUID NOT NULL,
+    booking_id UUID NOT NULL UNIQUE,
+    appointment_type VARCHAR(50) NOT NULL,
+    content JSONB NOT NULL DEFAULT '{}',
+    status VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+    locked_at TIMESTAMPTZ,
+    locked_by VARCHAR(50),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_no_update_if_locked CHECK (
+        status = 'DRAFT' OR (status = 'IMMUTABLE' AND locked_at IS NOT NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_notes_tenant ON clinical_notes(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_notes_patient ON clinical_notes(patient_id);
+CREATE INDEX IF NOT EXISTS idx_notes_practitioner ON clinical_notes(practitioner_id);
+CREATE INDEX IF NOT EXISTS idx_notes_booking ON clinical_notes(booking_id);
+CREATE INDEX IF NOT EXISTS idx_notes_status ON clinical_notes(status);
+CREATE INDEX IF NOT EXISTS idx_notes_content ON clinical_notes USING GIN(content);
+CREATE INDEX IF NOT EXISTS idx_notes_lock_check ON clinical_notes(status, created_at) 
+    WHERE status = 'DRAFT';
+```
+
+### 3.2 Flyway Migration V2__add_amendments.sql
+
+```sql
+CREATE TABLE IF NOT EXISTS amendments (
+    amendment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    note_id UUID NOT NULL REFERENCES clinical_notes(note_id) ON DELETE CASCADE,
+    practitioner_id UUID NOT NULL,
+    amendment_text TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_amendments_note ON amendments(note_id);
+CREATE INDEX IF NOT EXISTS idx_amendments_tenant ON amendments(tenant_id);
+```
+
+---
+
+## 4. DOMAIN ENTITIES
+
+### 4.1 ClinicalNote Entity
+
+```java
+package com.pracisos.charting.domain.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.annotations.UpdateTimestamp;
+import org.hibernate.type.SqlTypes;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+@Entity
+@Table(name = "clinical_notes")
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class ClinicalNote {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    @Column(name = "note_id", updatable = false, nullable = false)
+    private UUID noteId;
+
+    @Column(name = "tenant_id", nullable = false)
+    private UUID tenantId;
+
+    @Column(name = "patient_id", nullable = false)
+    private UUID patientId;
+
+    @Column(name = "practitioner_id", nullable = false)
+    private UUID practitionerId;
+
+    @Column(name = "booking_id", nullable = false, unique = true)
+    private UUID bookingId;
+
+    @Column(name = "appointment_type", nullable = false, length = 50)
+    private String appointmentType;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "content", nullable = false, columnDefinition = "jsonb")
+    @Builder.Default
+    private NoteContent content = new NoteContent();
+
+    @Column(name = "status", nullable = false, length = 20)
+    @Builder.Default
+    private String status = "DRAFT";
+
+    @Column(name = "locked_at")
+    private Instant lockedAt;
+
+    @Column(name = "locked_by", length = 50)
+    private String lockedBy;
+
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
+
+    @UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+
+    @OneToMany(mappedBy = "note", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    @Builder.Default
+    private List<Amendment> amendments = new ArrayList<>();
+
+    public boolean isLocked() {
+        return "IMMUTABLE".equals(status);
+    }
+
+    public boolean isAutoLockDue() {
+        if (!"DRAFT".equals(status)) return false;
+        return createdAt.plusSeconds(86400).isBefore(Instant.now());
+    }
+
+    public void lock(String lockedBy) {
+        this.status = "IMMUTABLE";
+        this.lockedAt = Instant.now();
+        this.lockedBy = lockedBy;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class NoteContent {
+        private String subjective = "";
+        private String objective = "";
+        private String assessment = "";
+        private String plan = "";
+        private List<String> tags = new ArrayList<>();
+    }
+}
+```
+
+### 4.2 Amendment Entity
+
+```java
+package com.pracisos.charting.domain.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.hibernate.annotations.CreationTimestamp;
+
+import java.time.Instant;
+import java.util.UUID;
+
+@Entity
+@Table(name = "amendments")
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class Amendment {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    @Column(name = "amendment_id", updatable = false, nullable = false)
+    private UUID amendmentId;
+
+    @Column(name = "tenant_id", nullable = false)
+    private UUID tenantId;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "note_id", nullable = false)
+    private ClinicalNote note;
+
+    @Column(name = "practitioner_id", nullable = false)
+    private UUID practitionerId;
+
+    @Column(name = "amendment_text", nullable = false, columnDefinition = "TEXT")
+    private String amendmentText;
+
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
+}
+```
+
+---
+
+## 5. REPOSITORIES
+
+### 5.1 ClinicalNoteRepository
+
+```java
+package com.pracisos.charting.domain.repository;
+
+import com.pracisos.charting.domain.entity.ClinicalNote;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+@Repository
+public interface ClinicalNoteRepository extends JpaRepository<ClinicalNote, UUID> {
+
+    @Query("SELECT n FROM ClinicalNote n WHERE n.tenantId = :tenantId AND n.patientId = :patientId ORDER BY n.createdAt DESC")
+    List<ClinicalNote> findAllByTenantIdAndPatientId(@Param("tenantId") UUID tenantId, @Param("patientId") UUID patientId);
+
+    @Query("SELECT n FROM ClinicalNote n WHERE n.tenantId = :tenantId AND n.practitionerId = :practitionerId ORDER BY n.createdAt DESC")
+    List<ClinicalNote> findAllByTenantIdAndPractitionerId(@Param("tenantId") UUID tenantId, @Param("practitionerId") UUID practitionerId);
+
+    @Query("SELECT n FROM ClinicalNote n LEFT JOIN FETCH n.amendments WHERE n.noteId = :noteId AND n.tenantId = :tenantId")
+    Optional<ClinicalNote> findByNoteIdAndTenantIdWithAmendments(@Param("noteId") UUID noteId, @Param("tenantId") UUID tenantId);
+
+    @Query("SELECT n FROM ClinicalNote n WHERE n.tenantId = :tenantId AND n.bookingId = :bookingId")
+    Optional<ClinicalNote> findByTenantIdAndBookingId(@Param("tenantId") UUID tenantId, @Param("bookingId") UUID bookingId);
+
+    @Query("SELECT n FROM ClinicalNote n WHERE n.status = 'DRAFT' AND n.createdAt < :cutoff")
+    List<ClinicalNote> findDraftsOlderThan(@Param("cutoff") java.time.Instant cutoff);
+
+    boolean existsByBookingIdAndTenantId(UUID bookingId, UUID tenantId);
+}
+```
+
+### 5.2 AmendmentRepository
+
+```java
+package com.pracisos.charting.domain.repository;
+
+import com.pracisos.charting.domain.entity.Amendment;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+import java.util.UUID;
+
+@Repository
+public interface AmendmentRepository extends JpaRepository<Amendment, UUID> {
+
+    List<Amendment> findAllByNoteNoteIdOrderByCreatedAtDesc(UUID noteId);
+}
+```
+
+---
+
+## 6. DTOs
+
+### 6.1 Requests
+
+```java
+package com.pracisos.charting.dto.request;
+
+import com.pracisos.charting.domain.entity.ClinicalNote;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+
+public record SaveDraftRequest(
+    @NotNull ClinicalNote.NoteContent content
+) {}
+```
+
+```java
+package com.pracisos.charting.dto.request;
+
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import java.util.UUID;
+
+public record AddAmendmentRequest(
+    @NotNull UUID practitionerId,
+    @NotBlank String amendmentText
+) {}
+```
+
+### 6.2 Responses
+
+```java
+package com.pracisos.charting.dto.response;
+
+import com.pracisos.charting.domain.entity.ClinicalNote;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
+
+public record NoteResponse(
+    UUID noteId,
+    UUID patientId,
+    UUID practitionerId,
+    UUID bookingId,
+    String appointmentType,
+    ClinicalNote.NoteContent content,
+    String status,
+    Instant lockedAt,
+    String lockedBy,
+    Instant createdAt,
+    Instant updatedAt,
+    List<AmendmentResponse> amendments
+) {}
+```
+
+```java
+package com.pracisos.charting.dto.response;
+
+import java.time.Instant;
+import java.util.UUID;
+
+public record AmendmentResponse(
+    UUID amendmentId,
+    UUID practitionerId,
+    String amendmentText,
+    Instant createdAt
+) {}
+```
+
+---
+
+## 7. SERVICES
+
+### 7.1 ClinicalNoteService
+
+```java
+package com.pracisos.charting.service;
+
+import com.pracisos.charting.domain.entity.Amendment;
+import com.pracisos.charting.domain.entity.ClinicalNote;
+import com.pracisos.charting.domain.repository.AmendmentRepository;
+import com.pracisos.charting.domain.repository.ClinicalNoteRepository;
+import com.pracisos.charting.dto.request.AddAmendmentRequest;
+import com.pracisos.charting.dto.request.SaveDraftRequest;
+import com.pracisos.charting.dto.response.AmendmentResponse;
+import com.pracisos.charting.dto.response.NoteResponse;
+import com.pracisos.charting.event.EventPublisher;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+@Transactional
+public class ClinicalNoteService {
+
+    private final ClinicalNoteRepository noteRepository;
+    private final AmendmentRepository amendmentRepository;
+    private final EventPublisher eventPublisher;
+
+    @Transactional(readOnly = true)
+    public List<NoteResponse> getNotesByPatient(UUID tenantId, UUID patientId) {
+        return noteRepository.findAllByTenantIdAndPatientId(tenantId, patientId)
+            .stream().map(this::mapToResponse).collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public NoteResponse getNote(UUID tenantId, UUID noteId) {
+        ClinicalNote note = noteRepository.findByNoteIdAndTenantIdWithAmendments(noteId, tenantId)
+            .orElseThrow(() -> new RuntimeException("Note not found"));
+        return mapToResponse(note);
+    }
+
+    public NoteResponse saveDraft(UUID tenantId, UUID noteId, UUID practitionerId, SaveDraftRequest request) {
+        ClinicalNote note = noteRepository.findById(noteId)
+            .orElseThrow(() -> new RuntimeException("Note not found"));
+
+        if (!note.getTenantId().equals(tenantId)) {
+            throw new RuntimeException("Cross-tenant access denied");
+        }
+
+        if (note.isLocked()) {
+            throw new RuntimeException("Cannot edit locked note. Use amendments instead.");
+        }
+
+        if (!note.getPractitionerId().equals(practitionerId)) {
+            throw new RuntimeException("Only the assigned practitioner can edit this note");
+        }
+
+        note.setContent(request.content());
+        note = noteRepository.save(note);
+
+        log.info("Draft saved for note {} by practitioner {}", noteId, practitionerId);
+        return mapToResponse(note);
+    }
+
+    public NoteResponse lockNote(UUID tenantId, UUID noteId, UUID practitionerId) {
+        ClinicalNote note = noteRepository.findById(noteId)
+            .orElseThrow(() -> new RuntimeException("Note not found"));
+
+        if (!note.getTenantId().equals(tenantId)) {
+            throw new RuntimeException("Cross-tenant access denied");
+        }
+
+        if (note.isLocked()) {
+            throw new RuntimeException("Note is already locked");
+        }
+
+        note.lock("PRACTITIONER");
+        note = noteRepository.save(note);
+
+        eventPublisher.publishNoteLocked(note);
+        log.info("Note {} manually locked by practitioner {}", noteId, practitionerId);
+
+        return mapToResponse(note);
+    }
+
+    public AmendmentResponse addAmendment(UUID tenantId, UUID noteId, AddAmendmentRequest request) {
+        ClinicalNote note = noteRepository.findById(noteId)
+            .orElseThrow(() -> new RuntimeException("Note not found"));
+
+        if (!note.getTenantId().equals(tenantId)) {
+            throw new RuntimeException("Cross-tenant access denied");
+        }
+
+        if (!note.isLocked()) {
+            throw new RuntimeException("Can only amend locked notes");
+        }
+
+        Amendment amendment = Amendment.builder()
+            .tenantId(tenantId)
+            .note(note)
+            .practitionerId(request.practitionerId())
+            .amendmentText(request.amendmentText())
+            .build();
+
+        amendment = amendmentRepository.save(amendment);
+        eventPublisher.publishNoteAmended(note, amendment);
+
+        log.info("Amendment added to note {} by practitioner {}", noteId, request.practitionerId());
+        return mapToAmendmentResponse(amendment);
+    }
+
+    public void autoLockNote(ClinicalNote note) {
+        note.lock("SYSTEM");
+        noteRepository.save(note);
+        eventPublisher.publishNoteLocked(note);
+        log.info("Note {} auto-locked by system (24h expired)", note.getNoteId());
+    }
+
+    private NoteResponse mapToResponse(ClinicalNote note) {
+        return new NoteResponse(
+            note.getNoteId(), note.getPatientId(), note.getPractitionerId(),
+            note.getBookingId(), note.getAppointmentType(), note.getContent(),
+            note.getStatus(), note.getLockedAt(), note.getLockedBy(),
+            note.getCreatedAt(), note.getUpdatedAt(),
+            note.getAmendments().stream().map(this::mapToAmendmentResponse).collect(Collectors.toList())
+        );
+    }
+
+    private AmendmentResponse mapToAmendmentResponse(Amendment amendment) {
+        return new AmendmentResponse(
+            amendment.getAmendmentId(), amendment.getPractitionerId(),
+            amendment.getAmendmentText(), amendment.getCreatedAt()
+        );
+    }
+}
+```
+
+### 7.2 Auto-Lock Scheduled Service
+
+```java
+package com.pracisos.charting.service;
+
+import com.pracisos.charting.domain.entity.ClinicalNote;
+import com.pracisos.charting.domain.repository.ClinicalNoteRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Instant;
+import java.util.List;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class AutoLockService {
+
+    private final ClinicalNoteRepository noteRepository;
+    private final ClinicalNoteService noteService;
+
+    @Scheduled(fixedRate = 3600000) // Every hour
+    @Transactional
+    public void autoLockExpiredDrafts() {
+        Instant cutoff = Instant.now().minusSeconds(86400); // 24 hours ago
+        List<ClinicalNote> expiredDrafts = noteRepository.findDraftsOlderThan(cutoff);
+
+        log.info("Auto-locking {} expired draft notes", expiredDrafts.size());
+
+        for (ClinicalNote note : expiredDrafts) {
+            try {
+                noteService.autoLockNote(note);
+            } catch (Exception e) {
+                log.error("Failed to auto-lock note {}: {}", note.getNoteId(), e.getMessage());
+            }
+        }
+    }
+}
+```
+
+### 7.3 Event Consumer (Booking Events)
+
+```java
+package com.pracisos.charting.service;
+
+import com.pracisos.charting.domain.entity.ClinicalNote;
+import com.pracisos.charting.domain.repository.ClinicalNoteRepository;
+import com.pracisos.charting.event.dto.BookingCancelledEvent;
+import com.pracisos.charting.event.dto.BookingConfirmedEvent;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.support.Acknowledgment;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class BookingEventConsumer {
+
+    private final ClinicalNoteRepository noteRepository;
+
+    @KafkaListener(topics = "booking.confirmed", groupId = "charting-service")
+    @Transactional
+    public void handleBookingConfirmed(BookingConfirmedEvent event, Acknowledgment ack) {
+        log.info("Received BookingConfirmed: {} for patient {}", event.getBookingId(), event.getPatientId());
+
+        if (noteRepository.existsByBookingIdAndTenantId(event.getBookingId(), event.getTenantId())) {
+            log.warn("Note already exists for booking {}, skipping", event.getBookingId());
+            ack.acknowledge();
+            return;
+        }
+
+        ClinicalNote note = ClinicalNote.builder()
+            .tenantId(event.getTenantId())
+            .patientId(event.getPatientId())
+            .practitionerId(event.getPractitionerId())
+            .bookingId(event.getBookingId())
+            .appointmentType(event.getAppointmentType())
+            .status("DRAFT")
+            .build();
+
+        noteRepository.save(note);
+        log.info("Created draft note {} for booking {}", note.getNoteId(), event.getBookingId());
+        ack.acknowledge();
+    }
+
+    @KafkaListener(topics = "booking.cancelled", groupId = "charting-service")
+    @Transactional
+    public void handleBookingCancelled(BookingCancelledEvent event, Acknowledgment ack) {
+        log.info("Received BookingCancelled: {}", event.getBookingId());
+
+        noteRepository.findByTenantIdAndBookingId(event.getTenantId(), event.getBookingId())
+            .ifPresent(note -> {
+                if ("DRAFT".equals(note.getStatus())) {
+                    noteRepository.delete(note);
+                    log.info("Deleted draft note {} for cancelled booking {}",
+                        note.getNoteId(), event.getBookingId());
+                } else {
+                    log.info("Note {} is locked, preserving for records", note.getNoteId());
+                }
+            });
+
+        ack.acknowledge();
+    }
+}
+```
+
+---
+
+## 8. EVENT PUBLISHING
+
+### 8.1 Event DTOs
+
+```java
+package com.pracisos.charting.event.dto;
+
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+
+import java.time.Instant;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class ClinicalNoteLockedPayload {
+    private UUID noteId;
+    private UUID tenantId;
+    private UUID patientId;
+    private UUID practitionerId;
+    private UUID bookingId;
+    private String lockedBy;
+    private Instant lockedAt;
+}
+```
+
+```java
+package com.pracisos.charting.event.dto;
+
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+
+import java.time.Instant;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class ClinicalNoteAmendedPayload {
+    private UUID noteId;
+    private UUID tenantId;
+    private UUID amendmentId;
+    private UUID practitionerId;
+    private String amendmentText;
+    private Instant createdAt;
+}
+```
+
+### 8.2 Event Publisher
+
+```java
+package com.pracisos.charting.event;
+
+import com.pracisos.charting.domain.entity.Amendment;
+import com.pracisos.charting.domain.entity.ClinicalNote;
+import com.pracisos.charting.event.dto.ClinicalNoteAmendedPayload;
+import com.pracisos.charting.event.dto.ClinicalNoteLockedPayload;
+import io.micrometer.tracing.Tracer;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.stereotype.Component;
+
+import java.util.UUID;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class EventPublisher {
+
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final Tracer tracer;
+
+    private String currentTraceId() {
+        var span = tracer.currentSpan();
+        return span != null ? span.context().traceId() : "no-trace";
+    }
+
+    public void publishNoteLocked(ClinicalNote note) {
+        var payload = new ClinicalNoteLockedPayload(
+            note.getNoteId(), note.getTenantId(), note.getPatientId(),
+            note.getPractitionerId(), note.getBookingId(),
+            note.getLockedBy(), note.getLockedAt()
+        );
+        var event = new PracisosEvent<>("ClinicalNoteLockedV1", note.getTenantId(), currentTraceId(), payload);
+        kafkaTemplate.send("charting.note.locked", note.getTenantId().toString(), event);
+        log.info("Published ClinicalNoteLockedV1 for note {}", note.getNoteId());
+    }
+
+    public void publishNoteAmended(ClinicalNote note, Amendment amendment) {
+        var payload = new ClinicalNoteAmendedPayload(
+            note.getNoteId(), note.getTenantId(), amendment.getAmendmentId(),
+            amendment.getPractitionerId(), amendment.getAmendmentText(),
+            amendment.getCreatedAt()
+        );
+        var event = new PracisosEvent<>("ClinicalNoteAmendedV1", note.getTenantId(), currentTraceId(), payload);
+        kafkaTemplate.send("charting.note.amended", note.getTenantId().toString(), event);
+        log.info("Published ClinicalNoteAmendedV1 for note {}", note.getNoteId());
+    }
+}
+```
+
+---
+
+## 9. CONTROLLER
+
+```java
+package com.pracisos.charting.controller;
+
+import com.pracisos.charting.dto.request.AddAmendmentRequest;
+import com.pracisos.charting.dto.request.SaveDraftRequest;
+import com.pracisos.charting.dto.response.AmendmentResponse;
+import com.pracisos.charting.dto.response.NoteResponse;
+import com.pracisos.charting.service.ClinicalNoteService;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/api/v1/charting")
+@RequiredArgsConstructor
+public class ChartingController {
+
+    private final ClinicalNoteService noteService;
+
+    @GetMapping("/notes")
+    @PreAuthorize("hasRole('PRACTITIONER')")
+    public ResponseEntity<List<NoteResponse>> getNotesByPatient(
+        @RequestAttribute("tenantId") UUID tenantId,
+        @RequestParam UUID patientId
+    ) {
+        return ResponseEntity.ok(noteService.getNotesByPatient(tenantId, patientId));
+    }
+
+    @GetMapping("/notes/{id}")
+    @PreAuthorize("hasRole('PRACTITIONER')")
+    public ResponseEntity<NoteResponse> getNote(
+        @RequestAttribute("tenantId") UUID tenantId,
+        @PathVariable UUID id
+    ) {
+        return ResponseEntity.ok(noteService.getNote(tenantId, id));
+    }
+
+    @PostMapping("/notes/{id}/draft")
+    @PreAuthorize("hasRole('PRACTITIONER')")
+    public ResponseEntity<NoteResponse> saveDraft(
+        @RequestAttribute("tenantId") UUID tenantId,
+        @RequestAttribute("userId") UUID practitionerId,
+        @PathVariable UUID id,
+        @Valid @RequestBody SaveDraftRequest request
+    ) {
+        return ResponseEntity.ok(noteService.saveDraft(tenantId, id, practitionerId, request));
+    }
+
+    @PostMapping("/notes/{id}/lock")
+    @PreAuthorize("hasRole('PRACTITIONER')")
+    public ResponseEntity<NoteResponse> lockNote(
+        @RequestAttribute("tenantId") UUID tenantId,
+        @RequestAttribute("userId") UUID practitionerId,
+        @PathVariable UUID id
+    ) {
+        return ResponseEntity.ok(noteService.lockNote(tenantId, id, practitionerId));
+    }
+
+    @PostMapping("/notes/{id}/amendments")
+    @PreAuthorize("hasRole('PRACTITIONER')")
+    public ResponseEntity<AmendmentResponse> addAmendment(
+        @RequestAttribute("tenantId") UUID tenantId,
+        @PathVariable UUID id,
+        @Valid @RequestBody AddAmendmentRequest request
+    ) {
+        return ResponseEntity.ok(noteService.addAmendment(tenantId, id, request));
+    }
+}
+```
+
+---
+
+## 10. FRONTEND: NOTE EDITOR
+
+### 10.1 RTK Query API
+
+```typescript
+// features/charting/api.ts
+import { createApi } from '@reduxjs/toolkit/query/react';
+import { baseQuery } from '../../shared/api/baseQuery';
+
+export interface NoteContent {
+  subjective: string;
+  objective: string;
+  assessment: string;
+  plan: string;
+  tags: string[];
+}
+
+export interface Note {
+  noteId: string;
+  patientId: string;
+  practitionerId: string;
+  bookingId: string;
+  appointmentType: string;
+  content: NoteContent;
+  status: 'DRAFT' | 'IMMUTABLE';
+  lockedAt: string | null;
+  lockedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+  amendments: Amendment[];
+}
+
+export interface Amendment {
+  amendmentId: string;
+  practitionerId: string;
+  amendmentText: string;
+  createdAt: string;
+}
+
+export const chartingApi = createApi({
+  reducerPath: 'chartingApi',
+  baseQuery: baseQuery,
+  tagTypes: ['Note'],
+  endpoints: (builder) => ({
+    getNotesByPatient: builder.query<Note[], string>({
+      query: (patientId) => `/charting/notes?patientId=${patientId}`,
+      providesTags: ['Note'],
+    }),
+    getNote: builder.query<Note, string>({
+      query: (noteId) => `/charting/notes/${noteId}`,
+      providesTags: (result, error, id) => [{ type: 'Note', id }],
+    }),
+    saveDraft: builder.mutation<Note, { noteId: string; content: NoteContent }>({
+      query: ({ noteId, content }) => ({
+        url: `/charting/notes/${noteId}/draft`,
+        method: 'POST',
+        body: { content },
+      }),
+      invalidatesTags: (result, error, { noteId }) => [{ type: 'Note', id: noteId }],
+    }),
+    lockNote: builder.mutation<Note, string>({
+      query: (noteId) => ({
+        url: `/charting/notes/${noteId}/lock`,
+        method: 'POST',
+      }),
+      invalidatesTags: (result, error, noteId) => [{ type: 'Note', id: noteId }],
+    }),
+    addAmendment: builder.mutation<Amendment, { noteId: string; text: string }>({
+      query: ({ noteId, text }) => ({
+        url: `/charting/notes/${noteId}/amendments`,
+        method: 'POST',
+        body: { practitionerId: 'current-user-id', amendmentText: text },
+      }),
+      invalidatesTags: (result, error, { noteId }) => [{ type: 'Note', id: noteId }],
+    }),
+  }),
+});
+
+export const {
+  useGetNotesByPatientQuery,
+  useGetNoteQuery,
+  useSaveDraftMutation,
+  useLockNoteMutation,
+  useAddAmendmentMutation,
+} = chartingApi;
+```
+
+### 10.2 NoteEditor Component (with Autosave)
+
+```tsx
+// features/charting/components/NoteEditor.tsx
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { useSaveDraftMutation, useLockNoteMutation } from '../api';
+import type { Note, NoteContent } from '../api';
+
+interface Props {
+  note: Note;
+}
+
+export function NoteEditor({ note }: Props) {
+  const [content, setContent] = useState<NoteContent>(note.content);
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved'>('saved');
+  const [saveDraft] = useSaveDraftMutation();
+  const [lockNote] = useLockNoteMutation();
+  const autosaveTimer = useRef<ReturnType<typeof setTimeout>>();
+  const isLocked = note.status === 'IMMUTABLE';
+
+  const debouncedSave = useCallback(
+    async (newContent: NoteContent) => {
+      setSaveStatus('saving');
+      try {
+        await saveDraft({ noteId: note.noteId, content: newContent }).unwrap();
+        setSaveStatus('saved');
+      } catch {
+        setSaveStatus('unsaved');
+      }
+    },
+    [note.noteId, saveDraft]
+  );
+
+  useEffect(() => {
+    if (isLocked) return;
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+    setSaveStatus('unsaved');
+    autosaveTimer.current = setTimeout(() => {
+      debouncedSave(content);
+    }, 30000); // 30 second autosave
+
+    return () => {
+      if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+    };
+  }, [content, debouncedSave, isLocked]);
+
+  const handleLock = async () => {
+    if (!window.confirm('Lock this note? It will become immutable.')) return;
+    await lockNote(note.noteId);
+  };
+
+  const handleManualSave = async () => {
+    await debouncedSave(content);
+  };
+
+  if (isLocked) {
+    return (
+      <div className="rounded-lg border border-amber-200 bg-amber-50 p-6">
+        <div className="mb-4 flex items-center gap-2">
+          <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800">
+            LOCKED
+          </span>
+          <span className="text-sm text-gray-500">
+            Locked {note.lockedBy === 'SYSTEM' ? 'automatically' : 'manually'} on{' '}
+            {new Date(note.lockedAt!).toLocaleString()}
+          </span>
+        </div>
+        <div className="space-y-4 opacity-75">
+          <SOAPEntry label="Subjective" value={content.subjective} />
+          <SOAPEntry label="Objective" value={content.objective} />
+          <SOAPEntry label="Assessment" value={content.assessment} />
+          <SOAPEntry label="Plan" value={content.plan} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className={`rounded-full px-2 py-1 text-xs font-medium ${
+            saveStatus === 'saved' ? 'bg-emerald-100 text-emerald-700' :
+            saveStatus === 'saving' ? 'bg-amber-100 text-amber-700' :
+            'bg-red-100 text-red-700'
+          }`}>
+            {saveStatus === 'saved' ? 'All changes saved' :
+             saveStatus === 'saving' ? 'Saving...' : 'Unsaved changes'}
+          </span>
+          <span className="text-xs text-gray-400">
+            Auto-saves every 30s
+          </span>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={handleManualSave}
+            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50"
+          >
+            Save Now
+          </button>
+          <button
+            onClick={handleLock}
+            className="rounded-md bg-slate-800 px-3 py-1.5 text-sm text-white hover:bg-slate-700"
+          >
+            Lock Note
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <SOAPEditor label="Subjective" value={content.subjective}
+          onChange={(v) => setContent(c => ({ ...c, subjective: v }))} />
+        <SOAPEditor label="Objective" value={content.objective}
+          onChange={(v) => setContent(c => ({ ...c, objective: v }))} />
+        <SOAPEditor label="Assessment" value={content.assessment}
+          onChange={(v) => setContent(c => ({ ...c, assessment: v }))} />
+        <SOAPEditor label="Plan" value={content.plan}
+          onChange={(v) => setContent(c => ({ ...c, plan: v }))} />
+      </div>
+    </div>
+  );
+}
+
+function SOAPEditor({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <div>
+      <label className="mb-1 block text-sm font-semibold text-slate-700">{label}</label>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={4}
+        className="w-full resize-y rounded-lg border border-gray-200 p-3 text-sm focus:border-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-400"
+        placeholder={`Enter ${label.toLowerCase()}...`}
+      />
+    </div>
+  );
+}
+
+function SOAPEntry({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <h4 className="mb-1 text-sm font-semibold text-slate-700">{label}</h4>
+      <p className="whitespace-pre-wrap text-sm text-gray-700">{value || <em className="text-gray-400">No entry</em>}</p>
+    </div>
+  );
+}
+```
+
+### 10.3 AmendmentPanel Component
+
+```tsx
+// features/charting/components/AmendmentPanel.tsx
+import { useState } from 'react';
+import { useAddAmendmentMutation } from '../api';
+import type { Note } from '../api';
+
+interface Props {
+  note: Note;
+}
+
+export function AmendmentPanel({ note }: Props) {
+  const [text, setText] = useState('');
+  const [addAmendment, { isLoading }] = useAddAmendmentMutation();
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!text.trim()) return;
+    await addAmendment({ noteId: note.noteId, text }).unwrap();
+    setText('');
+  };
+
+  return (
+    <div className="mt-6 rounded-lg border border-gray-200 bg-gray-50 p-4">
+      <h3 className="mb-3 text-sm font-semibold text-slate-700">Amendments</h3>
+
+      {note.amendments.length === 0 && (
+        <p className="mb-3 text-sm text-gray-400">No amendments yet</p>
+      )}
+
+      <div className="mb-4 space-y-3">
+        {note.amendments.map((a) => (
+          <div key={a.amendmentId} className="rounded-md border-l-4 border-amber-400 bg-white p-3">
+            <p className="text-sm text-gray-700">{a.amendmentText}</p>
+            <p className="mt-1 text-xs text-gray-400">
+              {new Date(a.createdAt).toLocaleString()}
+            </p>
+          </div>
+        ))}
+      </div>
+
+      <form onSubmit={handleSubmit} className="flex gap-2">
+        <input
+          type="text"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Add an amendment..."
+          className="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-slate-400 focus:outline-none"
+        />
+        <button
+          type="submit"
+          disabled={isLoading || !text.trim()}
+          className="rounded-md bg-amber-500 px-4 py-2 text-sm text-white hover:bg-amber-600 disabled:opacity-50"
+        >
+          Add
+        </button>
+      </form>
+    </div>
+  );
+}
+```
+
+---
+
+## 11. VALIDATION CHECKLIST
+
+| # | Test | Action | Expected Result |
+|---|------|--------|-----------------|
+| 1 | Auto-create note | Book appointment | Draft note created in charting DB |
+| 2 | Edit draft | `POST /charting/notes/{id}/draft` | Content updated, `updated_at` changes |
+| 3 | Autosave indicator | Wait 30s while typing | Status changes: unsaved → saving → saved |
+| 4 | Manual lock | Click "Lock Note" | Status = IMMUTABLE, `locked_by = PRACTITIONER` |
+| 5 | Edit locked note | `POST /charting/notes/{id}/draft` | 400 error: "Cannot edit locked note" |
+| 6 | Add amendment | `POST /charting/notes/{id}/amendments` | Amendment created, original unchanged |
+| 7 | Auto-lock | Wait 24h (or mock time) | System locks note, `locked_by = SYSTEM` |
+| 8 | Cancel booking | Emit `BookingCancelledV1` | Draft note deleted; locked note preserved |
+| 9 | Cross-tenant | Request wrong tenant_id | 403 Forbidden |
+| 10 | List notes | `GET /charting/notes?patientId=x` | Only notes for that patient + tenant |
+
+---
+
+## END OF CHARTING-SERVICE GUIDE
+
+**Version:** 1.0.0 | **Status:** READY FOR IMPLEMENTATION | **Next:** Phase 5 — Billing Service
+"""
+
+with open("/mnt/agents/output/PRACISOS_CHARTING_SERVICE_IMPLEMENTATION_GUIDE_v1.0.0.md", "w") as f:
+    f.write(phase4)
+
+print(f"Phase 4 saved: {len(phase4):,} characters")

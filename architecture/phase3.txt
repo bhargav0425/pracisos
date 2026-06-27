@@ -1,0 +1,1225 @@
+
+# The output directory is empty - I need to generate all 6 documents from scratch.
+# I'll write them one by one, saving each to disk immediately.
+# Starting with Phase 3 (Event Wiring) since Phase 2 wasn't actually saved.
+# Actually, let me generate ALL phases efficiently in one go.
+
+phase3 = """# PRACISOS PLATFORM
+## EVENT WIRING IMPLEMENTATION GUIDE
+### Phase 3: Cross-Service Event Synchronization
+
+---
+
+## DOCUMENT CONTROL
+
+| Field | Value |
+|-------|-------|
+| **Version** | 1.0.0 |
+| **Status** | READY FOR IMPLEMENTATION |
+| **Date** | 2026-06-27 |
+| **Phase** | 3 of 7 |
+| **Scope** | Kafka Configuration, Event Publishing, Event Consumption, Practitioner Cache Sync |
+| **Prerequisite** | Master Specification v1.0.0, Auth-Service Guide v1.0.0, Booking-Service Guide v1.0.0 |
+
+---
+
+## 1. GOAL
+
+Wire the `auth-service` and `booking-service` together via Apache Kafka events. Enable:
+- **Auth Service** publishes `TenantCreatedV1`, `UserCreatedV1`, `UserUpdatedV1`, `UserDeactivatedV1`
+- **Booking Service** consumes these events to maintain a denormalized `practitioners` cache
+- Full end-to-end validation: create a user in auth-service → see them appear in booking-service's practitioner list
+- Kafka running in Docker Compose alongside existing services
+
+**Validation:** Create a PRACTITIONER via auth-service → booking-service's `/api/v1/booking/practitioners` immediately lists them.
+
+---
+
+## 2. WHAT YOU WILL BUILD
+
+### 2.1 Infrastructure Additions
+
+```
+docker-compose.yml (updated)
+├── zookeeper (NEW)
+├── kafka (NEW)
+├── schema-registry (NEW)
+├── postgres-auth (existing)
+├── postgres-booking (existing)
+├── redis (existing)
+├── auth-service (existing)
+├── booking-service (existing)
+└── frontend (existing)
+```
+
+### 2.2 Auth-Service Event Publishing (enhanced)
+
+```
+auth-service/src/main/java/com/pracisos/auth/
+├── event/
+│   ├── EventPublisher.java (refactored for Avro/JSON)
+│   ├── TenantCreatedEvent.java
+│   ├── UserCreatedEvent.java
+│   ├── UserUpdatedEvent.java
+│   └── UserDeactivatedEvent.java
+├── config/
+│   └── KafkaProducerConfig.java (NEW)
+└── service/
+    └── UserService.java (enhanced with event emission)
+```
+
+### 2.3 Booking-Service Event Consumption (NEW)
+
+```
+booking-service/src/main/java/com/pracisos/booking/
+├── config/
+│   └── KafkaConsumerConfig.java (NEW)
+├── event/
+│   ├── AuthEventConsumer.java (NEW)
+│   ├── TenantCreatedEvent.java (NEW - DTO)
+│   ├── UserCreatedEvent.java (NEW - DTO)
+│   ├── UserUpdatedEvent.java (NEW - DTO)
+│   └── UserDeactivatedEvent.java (NEW - DTO)
+├── domain/entity/
+│   └── Practitioner.java (NEW - denormalized cache)
+├── domain/repository/
+│   └── PractitionerRepository.java (NEW)
+└── service/
+    └── PractitionerSyncService.java (NEW)
+```
+
+---
+
+## 3. INFRASTRUCTURE: KAFKA IN DOCKER COMPOSE
+
+### 3.1 Updated docker-compose.yml
+
+```yaml
+version: '3.8'
+
+services:
+  # --- Zookeeper (Kafka dependency) ---
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: pracisos-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo 'ruok' | nc localhost 2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Kafka Broker ---
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: pracisos-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # --- Schema Registry ---
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.5.0
+    container_name: pracisos-schema-registry
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/subjects"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Redis (existing, now shared) ---
+  redis:
+    image: redis:7-alpine
+    container_name: pracisos-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # --- Auth PostgreSQL (existing) ---
+  postgres-auth:
+    image: postgres:16-alpine
+    container_name: pracisos-auth-db
+    environment:
+      POSTGRES_DB: auth_db
+      POSTGRES_USER: auth_user
+      POSTGRES_PASSWORD: auth_pass
+    ports:
+      - "5433:5432"
+    volumes:
+      - auth_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth_user -d auth_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- Booking PostgreSQL (existing) ---
+  postgres-booking:
+    image: postgres:16-alpine
+    container_name: pracisos-booking-db
+    environment:
+      POSTGRES_DB: booking_db
+      POSTGRES_USER: booking_user
+      POSTGRES_PASSWORD: booking_pass
+    ports:
+      - "5434:5432"
+    volumes:
+      - booking_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U booking_user -d booking_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- Auth Service (existing, enhanced with Kafka) ---
+  auth-service:
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+    container_name: pracisos-auth-service
+    environment:
+      DB_HOST: postgres-auth
+      DB_PORT: 5432
+      DB_NAME: auth_db
+      DB_USER: auth_user
+      DB_PASSWORD: auth_pass
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-min-256-bits-long}
+      KAFKA_BOOTSTRAP: kafka:29092
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres-auth:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  # --- Booking Service (existing, enhanced with Kafka consumer) ---
+  booking-service:
+    build:
+      context: ./booking-service
+      dockerfile: Dockerfile
+    container_name: pracisos-booking-service
+    environment:
+      DB_HOST: postgres-booking
+      DB_PORT: 5432
+      DB_NAME: booking_db
+      DB_USER: booking_user
+      DB_PASSWORD: booking_pass
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-min-256-bits-long}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BOOTSTRAP: kafka:29092
+    ports:
+      - "8081:8080"
+    depends_on:
+      postgres-booking:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  # --- Frontend (existing) ---
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: pracisos-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - auth-service
+      - booking-service
+
+volumes:
+  auth_postgres_data:
+  booking_postgres_data:
+```
+
+---
+
+## 4. AUTH-SERVICE: EVENT PUBLISHING
+
+### 4.1 Kafka Producer Configuration
+
+```java
+package com.pracisos.auth.config;
+
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.StringSerializer;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.support.serializer.JsonSerializer;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Configuration
+public class KafkaProducerConfig {
+
+    @Value("${spring.kafka.bootstrap-servers}")
+    private String bootstrapServers;
+
+    @Bean
+    public ProducerFactory<String, Object> producerFactory() {
+        Map<String, Object> config = new HashMap<>();
+        config.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        config.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        config.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
+        config.put(ProducerConfig.ACKS_CONFIG, "all");
+        config.put(ProducerConfig.RETRIES_CONFIG, 3);
+        config.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
+        config.put(JsonSerializer.ADD_TYPE_INFO_HEADERS, true);
+        return new DefaultKafkaProducerFactory<>(config);
+    }
+
+    @Bean
+    public KafkaTemplate<String, Object> kafkaTemplate() {
+        return new KafkaTemplate<>(producerFactory());
+    }
+}
+```
+
+### 4.2 Event DTOs (Records)
+
+```java
+package com.pracisos.auth.event;
+
+import java.time.Instant;
+import java.util.UUID;
+
+// Base event envelope - all events wrap this
+public record PracisosEvent<T>(
+    UUID eventId,
+    String eventType,
+    UUID tenantId,
+    Instant timestamp,
+    String traceId,
+    T payload
+) {
+    public PracisosEvent(String eventType, UUID tenantId, String traceId, T payload) {
+        this(UUID.randomUUID(), eventType, tenantId, Instant.now(), traceId, payload);
+    }
+}
+```
+
+```java
+package com.pracisos.auth.event.payload;
+
+import java.time.Instant;
+import java.util.UUID;
+
+public record TenantCreatedPayload(
+    UUID tenantId,
+    String slug,
+    String name,
+    Instant createdAt
+) {}
+```
+
+```java
+package com.pracisos.auth.event.payload;
+
+import java.time.Instant;
+import java.util.UUID;
+
+public record UserCreatedPayload(
+    UUID userId,
+    UUID tenantId,
+    String email,
+    String firstName,
+    String lastName,
+    String role,
+    Instant createdAt
+) {}
+```
+
+```java
+package com.pracisos.auth.event.payload;
+
+import java.time.Instant;
+import java.util.UUID;
+
+public record UserUpdatedPayload(
+    UUID userId,
+    UUID tenantId,
+    String email,
+    String firstName,
+    String lastName,
+    String role,
+    String status,
+    Instant updatedAt
+) {}
+```
+
+```java
+package com.pracisos.auth.event.payload;
+
+import java.time.Instant;
+import java.util.UUID;
+
+public record UserDeactivatedPayload(
+    UUID userId,
+    UUID tenantId,
+    String reason,
+    Instant deactivatedAt
+) {}
+```
+
+### 4.3 Enhanced Event Publisher
+
+```java
+package com.pracisos.auth.event;
+
+import com.pracisos.auth.event.payload.*;
+import io.micrometer.tracing.Tracer;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.SendResult;
+import org.springframework.stereotype.Component;
+
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class EventPublisher {
+
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final Tracer tracer;
+
+    private String currentTraceId() {
+        var span = tracer.currentSpan();
+        return span != null ? span.context().traceId() : "no-trace";
+    }
+
+    public void publishTenantCreated(TenantCreatedPayload payload) {
+        var event = new PracisosEvent<>("TenantCreatedV1", payload.tenantId(), currentTraceId(), payload);
+        send("auth.tenant.created", payload.tenantId().toString(), event);
+    }
+
+    public void publishUserCreated(UserCreatedPayload payload) {
+        var event = new PracisosEvent<>("UserCreatedV1", payload.tenantId(), currentTraceId(), payload);
+        send("auth.user.created", payload.tenantId().toString(), event);
+    }
+
+    public void publishUserUpdated(UserUpdatedPayload payload) {
+        var event = new PracisosEvent<>("UserUpdatedV1", payload.tenantId(), currentTraceId(), payload);
+        send("auth.user.updated", payload.tenantId().toString(), event);
+    }
+
+    public void publishUserDeactivated(UserDeactivatedPayload payload) {
+        var event = new PracisosEvent<>("UserDeactivatedV1", payload.tenantId(), currentTraceId(), payload);
+        send("auth.user.deactivated", payload.tenantId().toString(), event);
+    }
+
+    private void send(String topic, String key, Object event) {
+        CompletableFuture<SendResult<String, Object>> future = kafkaTemplate.send(topic, key, event);
+        future.whenComplete((result, ex) -> {
+            if (ex != null) {
+                log.error("Failed to publish event to topic {}: {}", topic, ex.getMessage(), ex);
+            } else {
+                log.info("Published event to topic {} partition {} offset {}",
+                    topic, result.getRecordMetadata().partition(), result.getRecordMetadata().offset());
+            }
+        });
+    }
+}
+```
+
+### 4.4 Enhanced UserService with Events
+
+```java
+package com.pracisos.auth.service;
+
+import com.pracisos.auth.domain.entity.Tenant;
+import com.pracisos.auth.domain.entity.User;
+import com.pracisos.auth.domain.enums.Role;
+import com.pracisos.auth.domain.enums.UserStatus;
+import com.pracisos.auth.domain.repository.TenantRepository;
+import com.pracisos.auth.domain.repository.UserRepository;
+import com.pracisos.auth.dto.request.UserInviteRequest;
+import com.pracisos.auth.dto.request.UserUpdateRequest;
+import com.pracisos.auth.dto.response.UserResponse;
+import com.pracisos.auth.event.EventPublisher;
+import com.pracisos.auth.event.payload.UserCreatedPayload;
+import com.pracisos.auth.event.payload.UserDeactivatedPayload;
+import com.pracisos.auth.event.payload.UserUpdatedPayload;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+@Transactional
+public class UserService {
+
+    private final UserRepository userRepository;
+    private final TenantRepository tenantRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final EventPublisher eventPublisher;
+
+    public UserResponse inviteUser(UUID tenantId, UserInviteRequest request) {
+        Tenant tenant = tenantRepository.findById(tenantId)
+            .orElseThrow(() -> new RuntimeException("Tenant not found"));
+
+        if (userRepository.existsByEmail(request.email())) {
+            throw new RuntimeException("Email already registered");
+        }
+
+        String tempPassword = UUID.randomUUID().toString().substring(0, 12);
+        String passwordHash = passwordEncoder.encode(tempPassword);
+
+        User user = new User(tenant, request.email(), passwordHash,
+            request.firstName(), request.lastName(), request.role());
+        user.setStatus(UserStatus.INVITED);
+        user = userRepository.save(user);
+
+        eventPublisher.publishUserCreated(new UserCreatedPayload(
+            user.getUserId(), tenantId, user.getEmail(),
+            user.getFirstName(), user.getLastName(),
+            user.getRole().name(), user.getCreatedAt()
+        ));
+
+        log.info("Invited user {} with role {} for tenant {}",
+            user.getEmail(), user.getRole(), tenantId);
+
+        return mapToResponse(user);
+    }
+
+    public UserResponse updateUser(UUID tenantId, UUID userId, UserUpdateRequest request) {
+        User user = userRepository.findById(userId)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+
+        if (!user.getTenantId().equals(tenantId)) {
+            throw new RuntimeException("Cross-tenant access denied");
+        }
+
+        user.setFirstName(request.firstName());
+        user.setLastName(request.lastName());
+        user.setEmail(request.email());
+        if (request.status() != null) {
+            user.setStatus(request.status());
+        }
+
+        user = userRepository.save(user);
+
+        eventPublisher.publishUserUpdated(new UserUpdatedPayload(
+            user.getUserId(), tenantId, user.getEmail(),
+            user.getFirstName(), user.getLastName(),
+            user.getRole().name(), user.getStatus().name(),
+            user.getUpdatedAt()
+        ));
+
+        return mapToResponse(user);
+    }
+
+    public void deactivateUser(UUID tenantId, UUID userId, String reason) {
+        User user = userRepository.findById(userId)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+
+        if (!user.getTenantId().equals(tenantId)) {
+            throw new RuntimeException("Cross-tenant access denied");
+        }
+
+        user.setStatus(UserStatus.INACTIVE);
+        userRepository.save(user);
+
+        eventPublisher.publishUserDeactivated(new UserDeactivatedPayload(
+            userId, tenantId, reason, java.time.Instant.now()
+        ));
+
+        log.info("Deactivated user {} for tenant {}", userId, tenantId);
+    }
+
+    @Transactional(readOnly = true)
+    public List<UserResponse> getUsersByTenant(UUID tenantId) {
+        return userRepository.findAllByTenantId(tenantId)
+            .stream().map(this::mapToResponse).collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public UserResponse getUser(UUID tenantId, UUID userId) {
+        User user = userRepository.findById(userId)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+        if (!user.getTenantId().equals(tenantId)) {
+            throw new RuntimeException("Cross-tenant access denied");
+        }
+        return mapToResponse(user);
+    }
+
+    private UserResponse mapToResponse(User user) {
+        return new UserResponse(
+            user.getUserId(), user.getEmail(), user.getFirstName(),
+            user.getLastName(), user.getFullName(), user.getRole().name(),
+            user.getStatus().name(), user.getTenantId(), user.getCreatedAt()
+        );
+    }
+}
+```
+
+### 4.5 Enhanced TenantService with Events
+
+```java
+package com.pracisos.auth.service;
+
+import com.pracisos.auth.domain.entity.Tenant;
+import com.pracisos.auth.domain.repository.TenantRepository;
+import com.pracisos.auth.dto.request.TenantCreateRequest;
+import com.pracisos.auth.dto.response.TenantResponse;
+import com.pracisos.auth.event.EventPublisher;
+import com.pracisos.auth.event.payload.TenantCreatedPayload;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+@RequiredArgsConstructor
+@Transactional
+public class TenantService {
+
+    private final TenantRepository tenantRepository;
+    private final EventPublisher eventPublisher;
+
+    public TenantResponse createTenant(TenantCreateRequest request) {
+        if (tenantRepository.existsBySlug(request.slug())) {
+            throw new RuntimeException("Tenant slug already exists: " + request.slug());
+        }
+
+        Tenant tenant = new Tenant(request.slug(), request.name());
+        tenant = tenantRepository.save(tenant);
+
+        eventPublisher.publishTenantCreated(new TenantCreatedPayload(
+            tenant.getTenantId(), tenant.getSlug(), tenant.getName(), tenant.getCreatedAt()
+        ));
+
+        return new TenantResponse(
+            tenant.getTenantId(), tenant.getSlug(), tenant.getName(),
+            tenant.getStatus().name(), tenant.getCreatedAt()
+        );
+    }
+
+    @Transactional(readOnly = true)
+    public TenantResponse getTenantBySlug(String slug) {
+        Tenant tenant = tenantRepository.findBySlug(slug)
+            .orElseThrow(() -> new RuntimeException("Tenant not found: " + slug));
+        return new TenantResponse(
+            tenant.getTenantId(), tenant.getSlug(), tenant.getName(),
+            tenant.getStatus().name(), tenant.getCreatedAt()
+        );
+    }
+}
+```
+
+---
+
+## 5. BOOKING-SERVICE: EVENT CONSUMPTION
+
+### 5.1 Kafka Consumer Configuration
+
+```java
+package com.pracisos.booking.config;
+
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.annotation.EnableKafka;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.support.serializer.JsonDeserializer;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Configuration
+@EnableKafka
+public class KafkaConsumerConfig {
+
+    @Value("${spring.kafka.bootstrap-servers}")
+    private String bootstrapServers;
+
+    @Value("${spring.kafka.consumer.group-id:booking-service}")
+    private String groupId;
+
+    @Bean
+    public ConsumerFactory<String, Object> consumerFactory() {
+        Map<String, Object> config = new HashMap<>();
+        config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        config.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
+        config.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        config.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+        config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
+        config.put(JsonDeserializer.TRUSTED_PACKAGES, "com.pracisos.*");
+        config.put(JsonDeserializer.TYPE_MAPPINGS,
+            "TenantCreatedV1:com.pracisos.booking.event.dto.TenantCreatedEvent," +
+            "UserCreatedV1:com.pracisos.booking.event.dto.UserCreatedEvent," +
+            "UserUpdatedV1:com.pracisos.booking.event.dto.UserUpdatedEvent," +
+            "UserDeactivatedV1:com.pracisos.booking.event.dto.UserDeactivatedEvent");
+        return new DefaultKafkaConsumerFactory<>(config);
+    }
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, Object> kafkaListenerContainerFactory() {
+        ConcurrentKafkaListenerContainerFactory<String, Object> factory =
+            new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(consumerFactory());
+        factory.setConcurrency(3);
+        return factory;
+    }
+}
+```
+
+### 5.2 Event DTOs (Mirrored from Auth)
+
+```java
+package com.pracisos.booking.event.dto;
+
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+
+import java.time.Instant;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class TenantCreatedEvent {
+    private UUID tenantId;
+    private String slug;
+    private String name;
+    private Instant createdAt;
+}
+```
+
+```java
+package com.pracisos.booking.event.dto;
+
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+
+import java.time.Instant;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class UserCreatedEvent {
+    private UUID userId;
+    private UUID tenantId;
+    private String email;
+    private String firstName;
+    private String lastName;
+    private String role;
+    private Instant createdAt;
+}
+```
+
+```java
+package com.pracisos.booking.event.dto;
+
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+
+import java.time.Instant;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class UserUpdatedEvent {
+    private UUID userId;
+    private UUID tenantId;
+    private String email;
+    private String firstName;
+    private String lastName;
+    private String role;
+    private String status;
+    private Instant updatedAt;
+}
+```
+
+```java
+package com.pracisos.booking.event.dto;
+
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+
+import java.time.Instant;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class UserDeactivatedEvent {
+    private UUID userId;
+    private UUID tenantId;
+    private String reason;
+    private Instant deactivatedAt;
+}
+```
+
+### 5.3 Denormalized Practitioner Entity
+
+```java
+package com.pracisos.booking.domain.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.time.Instant;
+import java.util.UUID;
+
+@Entity
+@Table(name = "practitioners")
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class Practitioner {
+
+    @Id
+    @Column(name = "practitioner_id", nullable = false, updatable = false)
+    private UUID practitionerId;
+
+    @Column(name = "tenant_id", nullable = false)
+    private UUID tenantId;
+
+    @Column(name = "first_name", nullable = false, length = 100)
+    private String firstName;
+
+    @Column(name = "last_name", nullable = false, length = 100)
+    private String lastName;
+
+    @Column(name = "email", nullable = false, length = 255)
+    private String email;
+
+    @Column(name = "status", nullable = false, length = 20)
+    @Builder.Default
+    private String status = "ACTIVE";
+
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
+
+    @UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+
+    public String getFullName() {
+        return firstName + " " + lastName;
+    }
+}
+```
+
+### 5.4 Practitioner Repository
+
+```java
+package com.pracisos.booking.domain.repository;
+
+import com.pracisos.booking.domain.entity.Practitioner;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+@Repository
+public interface PractitionerRepository extends JpaRepository<Practitioner, UUID> {
+
+    List<Practitioner> findAllByTenantIdAndStatus(UUID tenantId, String status);
+
+    Optional<Practitioner> findByPractitionerIdAndTenantId(UUID practitionerId, UUID tenantId);
+
+    boolean existsByPractitionerIdAndTenantId(UUID practitionerId, UUID tenantId);
+}
+```
+
+### 5.5 Event Consumer Service
+
+```java
+package com.pracisos.booking.event;
+
+import com.pracisos.booking.domain.entity.Practitioner;
+import com.pracisos.booking.domain.repository.PractitionerRepository;
+import com.pracisos.booking.event.dto.*;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.support.Acknowledgment;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class AuthEventConsumer {
+
+    private final PractitionerRepository practitionerRepository;
+
+    @KafkaListener(topics = "auth.tenant.created", groupId = "booking-service")
+    @Transactional
+    public void handleTenantCreated(TenantCreatedEvent event, Acknowledgment ack) {
+        log.info("Received TenantCreated event: {} {}", event.getTenantId(), event.getSlug());
+        // Booking service may initialize tenant-specific resources here
+        ack.acknowledge();
+    }
+
+    @KafkaListener(topics = "auth.user.created", groupId = "booking-service")
+    @Transactional
+    public void handleUserCreated(UserCreatedEvent event, Acknowledgment ack) {
+        log.info("Received UserCreated event: {} role={}", event.getUserId(), event.getRole());
+
+        if (!"PRACTITIONER".equals(event.getRole()) && !"RECEPTIONIST".equals(event.getRole())) {
+            ack.acknowledge();
+            return;
+        }
+
+        if (practitionerRepository.existsById(event.getUserId())) {
+            log.warn("Practitioner {} already exists, skipping", event.getUserId());
+            ack.acknowledge();
+            return;
+        }
+
+        Practitioner practitioner = Practitioner.builder()
+            .practitionerId(event.getUserId())
+            .tenantId(event.getTenantId())
+            .firstName(event.getFirstName())
+            .lastName(event.getLastName())
+            .email(event.getEmail())
+            .status("ACTIVE")
+            .build();
+
+        practitionerRepository.save(practitioner);
+        log.info("Synced practitioner {} to booking-service", event.getUserId());
+        ack.acknowledge();
+    }
+
+    @KafkaListener(topics = "auth.user.updated", groupId = "booking-service")
+    @Transactional
+    public void handleUserUpdated(UserUpdatedEvent event, Acknowledgment ack) {
+        log.info("Received UserUpdated event: {}", event.getUserId());
+
+        practitionerRepository.findById(event.getUserId()).ifPresentOrElse(
+            practitioner -> {
+                practitioner.setFirstName(event.getFirstName());
+                practitioner.setLastName(event.getLastName());
+                practitioner.setEmail(event.getEmail());
+                if (event.getStatus() != null) {
+                    practitioner.setStatus(event.getStatus());
+                }
+                practitionerRepository.save(practitioner);
+                log.info("Updated practitioner {} in booking-service", event.getUserId());
+            },
+            () -> log.warn("Practitioner {} not found for update", event.getUserId())
+        );
+        ack.acknowledge();
+    }
+
+    @KafkaListener(topics = "auth.user.deactivated", groupId = "booking-service")
+    @Transactional
+    public void handleUserDeactivated(UserDeactivatedEvent event, Acknowledgment ack) {
+        log.info("Received UserDeactivated event: {}", event.getUserId());
+
+        practitionerRepository.findById(event.getUserId()).ifPresent(practitioner -> {
+            practitioner.setStatus("INACTIVE");
+            practitionerRepository.save(practitioner);
+            log.info("Deactivated practitioner {} in booking-service", event.getUserId());
+        });
+        ack.acknowledge();
+    }
+}
+```
+
+---
+
+## 6. BOOKING-SERVICE: PRACTITIONER API
+
+### 6.1 Practitioner Controller
+
+```java
+package com.pracisos.booking.controller;
+
+import com.pracisos.booking.domain.entity.Practitioner;
+import com.pracisos.booking.domain.repository.PractitionerRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/api/v1/booking")
+@RequiredArgsConstructor
+public class PractitionerController {
+
+    private final PractitionerRepository practitionerRepository;
+
+    @GetMapping("/practitioners")
+    @PreAuthorize("hasAnyRole('PATIENT', 'PRACTITIONER', 'RECEPTIONIST', 'CLINIC_OWNER')")
+    public ResponseEntity<List<Practitioner>> getPractitioners(
+        @RequestAttribute("tenantId") UUID tenantId
+    ) {
+        List<Practitioner> practitioners = practitionerRepository
+            .findAllByTenantIdAndStatus(tenantId, "ACTIVE");
+        return ResponseEntity.ok(practitioners);
+    }
+
+    @GetMapping("/practitioners/{id}")
+    @PreAuthorize("hasAnyRole('PATIENT', 'PRACTITIONER', 'RECEPTIONIST', 'CLINIC_OWNER')")
+    public ResponseEntity<Practitioner> getPractitioner(
+        @RequestAttribute("tenantId") UUID tenantId,
+        @PathVariable UUID id
+    ) {
+        return practitionerRepository.findByPractitionerIdAndTenantId(id, tenantId)
+            .map(ResponseEntity::ok)
+            .orElse(ResponseEntity.notFound().build());
+    }
+}
+```
+
+---
+
+## 7. TESTING: EVENT FLOW VALIDATION
+
+### 7.1 Integration Test with Testcontainers
+
+```java
+package com.pracisos.booking.integration;
+
+import com.pracisos.booking.domain.entity.Practitioner;
+import com.pracisos.booking.domain.repository.PractitionerRepository;
+import com.pracisos.booking.event.dto.UserCreatedEvent;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.test.context.EmbeddedKafka;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+import java.time.Instant;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+
+import static org.awaitility.Awaitility.await;
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest
+@Testcontainers
+@EmbeddedKafka(partitions = 1, topics = {"auth.user.created"})
+class PractitionerSyncIntegrationTest {
+
+    @Container
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine")
+        .withDatabaseName("test_booking")
+        .withUsername("test")
+        .withPassword("test");
+
+    @DynamicPropertySource
+    static void configureProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.username", postgres::getUsername);
+        registry.add("spring.datasource.password", postgres::getPassword);
+    }
+
+    @Autowired
+    private KafkaTemplate<String, Object> kafkaTemplate;
+
+    @Autowired
+    private PractitionerRepository practitionerRepository;
+
+    @Test
+    void whenUserCreatedEventReceived_thenPractitionerSynced() {
+        UUID tenantId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+
+        UserCreatedEvent event = new UserCreatedEvent(
+            userId, tenantId, "dr.bob@clinic.com",
+            "Bob", "Smith", "PRACTITIONER", Instant.now()
+        );
+
+        kafkaTemplate.send("auth.user.created", tenantId.toString(), event);
+
+        await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
+            Practitioner practitioner = practitionerRepository.findById(userId).orElseThrow();
+            assertEquals("Bob", practitioner.getFirstName());
+            assertEquals("Smith", practitioner.getLastName());
+            assertEquals(tenantId, practitioner.getTenantId());
+            assertEquals("ACTIVE", practitioner.getStatus());
+        });
+    }
+
+    @Test
+    void whenNonPractitionerUserCreated_thenIgnored() {
+        UUID tenantId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+
+        UserCreatedEvent event = new UserCreatedEvent(
+            userId, tenantId, "patient@clinic.com",
+            "Jane", "Doe", "PATIENT", Instant.now()
+        );
+
+        kafkaTemplate.send("auth.user.created", tenantId.toString(), event);
+
+        await().pollDelay(2, TimeUnit.SECONDS).untilAsserted(() -> {
+            assertFalse(practitionerRepository.existsById(userId));
+        });
+    }
+}
+```
+
+---
+
+## 8. FRONTEND: PRACTITIONER LIST
+
+### 8.1 RTK Query API
+
+```typescript
+// features/booking/api.ts
+import { createApi } from '@reduxjs/toolkit/query/react';
+import { baseQuery } from '../../shared/api/baseQuery';
+
+export interface Practitioner {
+  practitionerId: string;
+  tenantId: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  status: string;
+  fullName: string;
+}
+
+export const bookingApi = createApi({
+  reducerPath: 'bookingApi',
+  baseQuery: baseQuery,
+  tagTypes: ['Practitioner'],
+  endpoints: (builder) => ({
+    getPractitioners: builder.query<Practitioner[], void>({
+      query: () => '/booking/practitioners',
+      providesTags: ['Practitioner'],
+    }),
+  }),
+});
+
+export const { useGetPractitionersQuery } = bookingApi;
+```
+
+### 8.2 PractitionerList Component
+
+```tsx
+// features/booking/components/PractitionerList.tsx
+import { useGetPractitionersQuery } from '../api';
+
+export function PractitionerList() {
+  const { data: practitioners, isLoading, error } = useGetPractitionersQuery();
+
+  if (isLoading) return <div className="p-4">Loading practitioners...</div>;
+  if (error) return <div className="p-4 text-red-500">Failed to load practitioners</div>;
+  if (!practitioners?.length) return <div className="p-4 text-gray-500">No practitioners found</div>;
+
+  return (
+    <div className="space-y-2">
+      {practitioners.map((p) => (
+        <div key={p.practitionerId} className="flex items-center justify-between rounded-lg border p-4 hover:bg-gray-50">
+          <div>
+            <p className="font-medium text-gray-900">{p.fullName}</p>
+            <p className="text-sm text-gray-500">{p.email}</p>
+          </div>
+          <span className={`rounded-full px-2 py-1 text-xs font-medium ${
+            p.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-800'
+          }`}>
+            {p.status}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+---
+
+## 9. VALIDATION CHECKLIST
+
+| # | Test | Command / Action | Expected Result |
+|---|------|-----------------|-----------------|
+| 1 | Start stack | `docker-compose up -d` | All 8 containers healthy |
+| 2 | Create tenant | `POST /api/v1/auth/register` | 201 + `TenantCreatedV1` in Kafka |
+| 3 | Invite practitioner | `POST /api/v1/auth/users` | 201 + `UserCreatedV1` in Kafka |
+| 4 | Verify sync | `GET /api/v1/booking/practitioners` | Lists the new practitioner |
+| 5 | Update user | `PUT /api/v1/auth/users/{id}` | `UserUpdatedV1` emitted |
+| 6 | Verify update | `GET /api/v1/booking/practitioners/{id}` | Name/email updated |
+| 7 | Deactivate user | `DELETE /api/v1/auth/users/{id}` | `UserDeactivatedV1` emitted |
+| 8 | Verify deactivation | `GET /api/v1/booking/practitioners` | Status = INACTIVE |
+| 9 | Cross-tenant isolation | Request with wrong `tenant_id` | 403 Forbidden |
+| 10 | Non-practitioner ignored | Invite PATIENT role | No practitioner created |
+
+---
+
+## END OF EVENT WIRING GUIDE
+
+
