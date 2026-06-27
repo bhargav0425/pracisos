@@ -37,6 +37,24 @@ services:
       timeout: 5s
       retries: 5
 
+  # --- Charting Database ---
+  postgres-charting:
+    image: postgres:16-alpine
+    container_name: pracisos-charting-db
+    environment:
+      POSTGRES_DB: charting_db
+      POSTGRES_USER: charting_user
+      POSTGRES_PASSWORD: charting_pass
+    ports:
+      - "5435:5432"
+    volumes:
+      - charting_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U charting_user -d charting_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   # --- Redis Cache ---
   redis:
     image: redis:7-alpine
@@ -121,6 +139,28 @@ services:
       kafka:
         condition: service_healthy
 
+  # --- Charting Service ---
+  charting-service:
+    build:
+      context: .
+      dockerfile: charting-service/Dockerfile
+    container_name: pracisos-charting-service
+    environment:
+      DB_HOST: postgres-charting
+      DB_PORT: 5432
+      DB_NAME: charting_db
+      DB_USER: charting_user
+      DB_PASSWORD: charting_pass
+      JWT_SECRET: your-256-bit-secret-key-here-change-in-production-your-256-bit-secret-key-here-change-in-production
+      KAFKA_BOOTSTRAP: kafka:29092
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres-charting:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
   # --- Frontend SPA (Nginx) ---
   frontend:
     build:
@@ -132,7 +172,9 @@ services:
     depends_on:
       - auth-service
       - booking-service
+      - charting-service
 
 volumes:
   auth_postgres_data:
   booking_postgres_data:
+  charting_postgres_data:

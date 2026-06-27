@@ -3,6 +3,7 @@ import { authApi } from '../features/auth/api';
 import authReducer from '../features/auth/slice';
 import { bookingApi } from '../features/booking/api';
 import bookingReducer from '../features/booking/slice';
+import { chartingApi } from '../features/charting/api';
 
 export const store = configureStore({
   reducer: {
@@ -10,9 +11,10 @@ export const store = configureStore({
     booking: bookingReducer,
     [authApi.reducerPath]: authApi.reducer,
     [bookingApi.reducerPath]: bookingApi.reducer,
+    [chartingApi.reducerPath]: chartingApi.reducer,
   },
   middleware: (getDefaultMiddleware) =>
-    getDefaultMiddleware().concat(authApi.middleware, bookingApi.middleware),
+    getDefaultMiddleware().concat(authApi.middleware, bookingApi.middleware, chartingApi.middleware),
 });
 
 export type RootState = ReturnType<typeof store.getState>;

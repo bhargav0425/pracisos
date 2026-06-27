@@ -21,6 +21,7 @@
     <modules>
         <module>auth-service</module>
         <module>booking-service</module>
+        <module>charting-service</module>
     </modules>
 
     <dependencyManagement>

@@ -19,6 +19,7 @@ import { useGetTenantQuery } from '../api';
 import { BookingForm } from '../../booking/components/BookingForm';
 import { BookingList } from '../../booking/components/BookingList';
 import { BookingDetailModal } from '../../booking/components/BookingDetailModal';
+import { NoteList } from '../../charting/components/NoteList';
 import { 
   useGetBookingsQuery, 
   useCancelBookingMutation, 
@@ -33,11 +34,12 @@ export function ClinicDashboard() {
   const dispatch = useDispatch();
   const navigate = useNavigate();
 
-  const [activeTab, setActiveTab] = useState<'appointments' | 'book' | 'staff'>(
+  const [activeTab, setActiveTab] = useState<'appointments' | 'book' | 'staff' | 'charting'>(
     user?.role === 'CLINIC_OWNER' ? 'staff' : 'appointments'
   );
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedPatientId, setSelectedPatientId] = useState<string>('');
 
   const { data: tenant } = useGetTenantQuery(tenantSlug || '', {
     skip: !tenantSlug || user?.role === 'SYSTEM_ADMIN',
@@ -84,6 +86,15 @@ export function ClinicDashboard() {
   const isPatient = user?.role === 'PATIENT';
   const isReceptionist = user?.role === 'RECEPTIONIST';
   const isPractitioner = user?.role === 'PRACTITIONER';
+
+  // Extract unique patients from bookings for the charting dropdown
+  const patients = Array.from(
+    new Map(
+      bookings
+        .filter(b => b.patientId && b.patientName)
+        .map(b => [b.patientId, { id: b.patientId, name: b.patientName }])
+    ).values()
+  );
 
   return (
     <div className="min-h-screen p-6 md:p-10 text-slate-700 bg-[#f4f7f6]">
@@ -149,6 +160,19 @@ export function ClinicDashboard() {
             <PlusCircle className="w-4 h-4 mr-2" /> Book Appointment
           </button>
         )}
+
+        {isPractitioner && (
+          <button
+            onClick={() => setActiveTab('charting')}
+            className={`flex items-center px-4 py-2.5 font-semibold text-sm border-b-2 transition-all ${
+              activeTab === 'charting'
+                ? 'border-teal-600 text-teal-600'
+                : 'border-transparent text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <Activity className="w-4 h-4 mr-2" /> Clinical Charting
+          </button>
+        )}
       </div>
 
       {/* Tab Content */}
@@ -193,6 +217,35 @@ export function ClinicDashboard() {
 
         {activeTab === 'book' && (isPatient || isReceptionist) && (
           <BookingForm />
+        )}
+
+        {activeTab === 'charting' && isPractitioner && (
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-6 md:p-8 shadow-sm animate-fadeIn">
+            <h3 className="text-xl font-bold text-slate-800 mb-5 flex items-center">
+              <Activity className="w-5 h-5 mr-2.5 text-teal-600" /> Clinical Charting
+            </h3>
+            <div className="mb-6 max-w-xs">
+              <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5">Select Patient</label>
+              <select
+                value={selectedPatientId}
+                onChange={(e) => setSelectedPatientId(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:border-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-400"
+              >
+                <option value="">-- Choose Patient --</option>
+                {patients.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+            {selectedPatientId ? (
+              <NoteList 
+                patientId={selectedPatientId} 
+                patientName={patients.find(p => p.id === selectedPatientId)?.name} 
+              />
+            ) : (
+              <p className="text-sm text-slate-400 italic">Please select a patient to view or edit their clinical SOAP notes history.</p>
+            )}
+          </div>
         )}
       </div>
 
