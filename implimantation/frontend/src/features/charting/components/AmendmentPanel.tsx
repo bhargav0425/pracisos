@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useAddAmendmentMutation } from '../api';
-import { useAuth } from '../../auth/hooks/useAuth';
+import { useAuth } from '../../../shared/hooks/useAuth';
 import type { Note } from '../api';
 
 interface Props {
