@@ -49,7 +49,7 @@ public class BookingController {
     @PreAuthorize("hasAnyRole('PATIENT', 'RECEPTIONIST')")
     public ResponseEntity<BookingResponse> cancelBooking(
         @RequestAttribute("tenantId") UUID tenantId,
-        @PathVariable UUID id,
+        @PathVariable("id") UUID id,
         @Valid @RequestBody BookingStatusUpdateRequest request
     ) {
         return ResponseEntity.ok(bookingService.cancelBooking(tenantId, id, request.reason()));
@@ -59,7 +59,7 @@ public class BookingController {
     @PreAuthorize("hasRole('PRACTITIONER')")
     public ResponseEntity<BookingResponse> completeBooking(
         @RequestAttribute("tenantId") UUID tenantId,
-        @PathVariable UUID id
+        @PathVariable("id") UUID id
     ) {
         return ResponseEntity.ok(bookingService.completeBooking(tenantId, id));
     }
@@ -68,7 +68,7 @@ public class BookingController {
     @PreAuthorize("hasAnyRole('PRACTITIONER', 'RECEPTIONIST')")
     public ResponseEntity<BookingResponse> markNoShow(
         @RequestAttribute("tenantId") UUID tenantId,
-        @PathVariable UUID id
+        @PathVariable("id") UUID id
     ) {
         return ResponseEntity.ok(bookingService.markNoShow(tenantId, id));
     }

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useCreateBookingMutation, useGetPractitionersQuery, useGetAvailableSlotsQuery } from '../api';
 import { PractitionerCard } from './PractitionerCard';
 import { SlotGrid } from './SlotGrid';
@@ -17,9 +17,13 @@ export function BookingForm() {
   
   const [createBooking, { isLoading: isBooking }] = useCreateBookingMutation();
 
-  // Get slots for next 7 days in UTC ISO format
-  const from = new Date().toISOString();
-  const to = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  // Get slots for next 7 days in UTC ISO format (stable across renders)
+  const { from, to } = useMemo(() => {
+    return {
+      from: new Date().toISOString(),
+      to: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+    };
+  }, [selectedPractitioner]);
   
   const { data: slots, isLoading: loadingSlots } = useGetAvailableSlotsQuery(
     { practitionerId: selectedPractitioner!, from, to },
@@ -56,14 +60,14 @@ export function BookingForm() {
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       {successMsg && (
-        <div className="p-4 bg-emerald-50 border border-emerald-100 text-emerald-600 rounded-xl flex items-start text-sm">
+        <div data-testid="success-banner" className="p-4 bg-emerald-50 border border-emerald-100 text-emerald-600 rounded-xl flex items-start text-sm">
           <CheckCircle2 className="w-5 h-5 mr-3 shrink-0" />
           <span>{successMsg}</span>
         </div>
       )}
 
       {errorMsg && (
-        <div className="p-4 bg-rose-50 border border-rose-100 text-rose-600 rounded-xl flex items-start text-sm">
+        <div data-testid="error-banner" className="p-4 bg-rose-50 border border-rose-100 text-rose-600 rounded-xl flex items-start text-sm">
           <AlertCircle className="w-5 h-5 mr-3 shrink-0" />
           <span>{errorMsg}</span>
         </div>

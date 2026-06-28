@@ -35,6 +35,7 @@ public class KafkaConsumerConfig {
         config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
         config.put(JsonDeserializer.TRUSTED_PACKAGES, "*");
+        config.put(JsonDeserializer.TYPE_MAPPINGS, "com.pracisos.auth.event.PracisosEvent:com.pracisos.booking.event.PracisosEvent");
         return new DefaultKafkaConsumerFactory<>(config);
     }
 

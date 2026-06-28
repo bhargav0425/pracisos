@@ -49,6 +49,7 @@ export function SlotGrid({ slots, selectedSlotId, onSelect }: Props) {
                 key={slot.slotId}
                 onClick={() => onSelect(slot)}
                 disabled={slot.status !== 'AVAILABLE'}
+                data-testid="slot-button"
                 className={`rounded border px-3 py-2 text-sm font-medium transition-all ${
                   selectedSlotId === slot.slotId
                     ? 'border-teal-500 bg-teal-600 text-white shadow-md hover:bg-teal-700'

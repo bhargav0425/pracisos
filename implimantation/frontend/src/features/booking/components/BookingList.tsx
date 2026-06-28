@@ -39,6 +39,7 @@ export function BookingList({ bookings, onCancel, onComplete, onNoShow, userRole
         return (
           <div
             key={booking.bookingId}
+            data-testid="appointment-card"
             className="rounded-xl border border-slate-200/80 bg-white p-5 hover:shadow-md hover:border-slate-300/80 transition-all"
           >
             <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">

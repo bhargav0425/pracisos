@@ -51,3 +51,4 @@ coverage/
 .nyc_output/
 htmlcov/
 *.log
+implimantation/test-results/

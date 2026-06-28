@@ -10,6 +10,7 @@ export function PractitionerCard({ practitioner, onSelect, isSelected }: Props) 
   return (
     <button
       onClick={() => onSelect(practitioner)}
+      data-testid="practitioner-card"
       className={`w-full rounded-lg border p-4 text-left transition-all hover:shadow-md ${
         isSelected
           ? 'border-teal-500 bg-teal-50/50 ring-2 ring-teal-200'

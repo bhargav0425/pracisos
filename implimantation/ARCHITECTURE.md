@@ -40,7 +40,7 @@ graph TD
 ### Frontend (React 19 + TypeScript + Redux Toolkit)
 * **API Service:** Leverages RTK Query `authApi` to communicate with backend endpoints `/auth/login`, `/auth/register`, `/auth/users`, and `/auth/tenants/{slug}`.
 * **Routing:** Managed via `React Router v6` in `router.tsx` to redirect users based on roles (e.g., `SYSTEM_ADMIN` -> `/admin/dashboard`, clinic staff -> `/:tenantSlug/dashboard`).
-* **Design Aesthetic:** Tailored vanilla CSS rules matching the clean, light, teal-accented layout of **Jane App** clinic dashboard.
+* **Design Aesthetic:** Tailored vanilla CSS rules matching a clean, light, teal-accented clinic dashboard layout.
 
 ---
 

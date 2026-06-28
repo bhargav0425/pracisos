@@ -43,9 +43,9 @@ public class AvailabilityController {
     @PreAuthorize("hasAnyRole('PATIENT', 'PRACTITIONER', 'RECEPTIONIST', 'CLINIC_OWNER')")
     public ResponseEntity<List<SlotResponse>> getAvailableSlots(
         @RequestAttribute("tenantId") UUID tenantId,
-        @PathVariable UUID id,
-        @RequestParam Instant from,
-        @RequestParam Instant to
+        @PathVariable("id") UUID id,
+        @RequestParam("from") @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE_TIME) Instant from,
+        @RequestParam("to") @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE_TIME) Instant to
     ) {
         return ResponseEntity.ok(timeSlotService.getAvailableSlots(tenantId, id, from, to));
     }

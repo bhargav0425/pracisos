@@ -29,7 +29,7 @@ public class PractitionerController {
     @PreAuthorize("hasAnyRole('PATIENT', 'PRACTITIONER', 'RECEPTIONIST', 'CLINIC_OWNER')")
     public ResponseEntity<PractitionerResponse> getPractitioner(
         @RequestAttribute("tenantId") UUID tenantId,
-        @PathVariable UUID id
+        @PathVariable("id") UUID id
     ) {
         return ResponseEntity.ok(practitionerService.getPractitioner(tenantId, id));
     }

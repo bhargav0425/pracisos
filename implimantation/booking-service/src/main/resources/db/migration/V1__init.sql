@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS availability_templates (
     template_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL,
     practitioner_id UUID NOT NULL REFERENCES practitioners(practitioner_id),
-    day_of_week SMALLINT NOT NULL CHECK (day_of_week BETWEEN 0 AND 6),
+    day_of_week INTEGER NOT NULL CHECK (day_of_week BETWEEN 0 AND 6),
     start_time TIME NOT NULL,
     end_time TIME NOT NULL,
     slot_duration_minutes INTEGER NOT NULL DEFAULT 30,

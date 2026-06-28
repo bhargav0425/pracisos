@@ -37,10 +37,8 @@ public class TimeSlot {
     @Builder.Default
     private String status = "AVAILABLE";
 
-    @Version
     @Column(name = "version", nullable = false)
-    @Builder.Default
-    private Integer version = 1;
+    private Integer version;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)

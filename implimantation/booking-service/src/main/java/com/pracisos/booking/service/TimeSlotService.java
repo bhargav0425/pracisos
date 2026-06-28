@@ -43,7 +43,7 @@ public class TimeSlotService {
         }
 
         slot.setStatus("LOCKED");
-        return slotRepository.save(slot);
+        return slot;
     }
 
     public void unlockSlot(UUID slotId, UUID tenantId) {
@@ -55,7 +55,6 @@ public class TimeSlotService {
         }
 
         slot.setStatus("AVAILABLE");
-        slotRepository.save(slot);
     }
 
     private SlotResponse mapToResponse(TimeSlot slot) {
