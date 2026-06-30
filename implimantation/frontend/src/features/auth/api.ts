@@ -23,6 +23,10 @@ export interface LoginResponse {
 export interface TenantCreateRequest {
   slug: string;
   name: string;
+  ownerEmail: string;
+  ownerPassword: string;
+  ownerFirstName: string;
+  ownerLastName: string;
 }
 
 export interface TenantResponse {
@@ -97,6 +101,10 @@ export const authApi = createApi({
       query: (slug) => `/auth/tenants/${slug}`,
       providesTags: (result, error, slug) => [{ type: 'Tenants', id: slug }],
     }),
+    getTenants: builder.query<TenantResponse[], void>({
+      query: () => '/auth/tenants',
+      providesTags: ['Tenants'],
+    }),
     inviteUser: builder.mutation<UserResponse, UserInviteRequest>({
       query: (userData) => ({
         url: '/auth/users',
@@ -116,6 +124,7 @@ export const {
   useLoginMutation,
   useRegisterTenantMutation,
   useGetTenantQuery,
+  useGetTenantsQuery,
   useInviteUserMutation,
   useGetUsersQuery,
 } = authApi;

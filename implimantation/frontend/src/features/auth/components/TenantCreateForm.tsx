@@ -10,6 +10,10 @@ const tenantSchema = z.object({
   slug: z.string()
     .min(3, 'Slug must be at least 3 characters')
     .regex(/^[a-z0-9-]+$/, 'Slug can only contain lowercase letters, numbers, and hyphens'),
+  ownerEmail: z.string().email('Invalid email address'),
+  ownerPassword: z.string().min(6, 'Password must be at least 6 characters'),
+  ownerFirstName: z.string().min(1, 'First name is required'),
+  ownerLastName: z.string().min(1, 'Last name is required'),
 });
 
 type TenantFormData = z.infer<typeof tenantSchema>;
@@ -29,6 +33,10 @@ export function TenantCreateForm() {
       setSuccess(`Tenant "${res.name}" registered successfully with slug: ${res.slug}`);
       setValue('name', '');
       setValue('slug', '');
+      setValue('ownerEmail', '');
+      setValue('ownerPassword', '');
+      setValue('ownerFirstName', '');
+      setValue('ownerLastName', '');
     } catch (err) {
       // Handled by RTK query state
     }
@@ -55,37 +63,95 @@ export function TenantCreateForm() {
         </div>
       </div>
 
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
-        <div>
-          <label htmlFor="name" className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Clinic Name</label>
-          <input
-            {...register('name')}
-            onChange={(e) => {
-              register('name').onChange(e);
-              handleNameChange(e);
-            }}
-            type="text"
-            id="name"
-            placeholder="Maple Health Clinic"
-            className="block w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 transition-all"
-          />
-          {errors.name && <p className="text-red-500 text-xs mt-1.5">{errors.name.message}</p>}
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+        {/* Clinic Details Section */}
+        <div className="space-y-4">
+          <h4 className="text-xs font-bold uppercase tracking-wider text-teal-600 border-b border-teal-50 pb-1 mb-2">Clinic Details</h4>
+          <div>
+            <label htmlFor="name" className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Clinic Name</label>
+            <input
+              {...register('name')}
+              onChange={(e) => {
+                register('name').onChange(e);
+                handleNameChange(e);
+              }}
+              type="text"
+              id="name"
+              placeholder="Maple Health Clinic"
+              className="block w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 transition-all"
+            />
+            {errors.name && <p className="text-red-500 text-xs mt-1.5">{errors.name.message}</p>}
+          </div>
+
+          <div>
+            <label htmlFor="slug" className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Domain Slug</label>
+            <div className="flex rounded-xl bg-slate-50 border border-slate-200 focus-within:ring-2 focus-within:ring-teal-500/30 focus-within:border-teal-500 transition-all">
+              <span className="flex items-center pl-4 pr-1 text-slate-400 text-sm select-none">/</span>
+              <input
+                {...register('slug')}
+                type="text"
+                id="slug"
+                placeholder="maple-health"
+                className="block w-full py-2.5 pr-4 bg-transparent border-0 text-slate-800 placeholder-slate-400 focus:outline-none"
+              />
+            </div>
+            <p className="text-[10px] text-slate-400 mt-1">This forms the unique login route: /maple-health/dashboard</p>
+            {errors.slug && <p className="text-red-500 text-xs mt-1.5">{errors.slug.message}</p>}
+          </div>
         </div>
 
-        <div>
-          <label htmlFor="slug" className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Domain Slug</label>
-          <div className="flex rounded-xl bg-slate-50 border border-slate-200 focus-within:ring-2 focus-within:ring-teal-500/30 focus-within:border-teal-500 transition-all">
-            <span className="flex items-center pl-4 pr-1 text-slate-400 text-sm select-none">/</span>
-            <input
-              {...register('slug')}
-              type="text"
-              id="slug"
-              placeholder="maple-health"
-              className="block w-full py-2.5 pr-4 bg-transparent border-0 text-slate-800 placeholder-slate-400 focus:outline-none"
-            />
+        {/* Clinic Owner Account Section */}
+        <div className="space-y-4 pt-2">
+          <h4 className="text-xs font-bold uppercase tracking-wider text-teal-600 border-b border-teal-50 pb-1 mb-2">Clinic Owner Account</h4>
+          
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label htmlFor="ownerFirstName" className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">First Name</label>
+              <input
+                {...register('ownerFirstName')}
+                type="text"
+                id="ownerFirstName"
+                placeholder="Jane"
+                className="block w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 transition-all"
+              />
+              {errors.ownerFirstName && <p className="text-red-500 text-xs mt-1.5">{errors.ownerFirstName.message}</p>}
+            </div>
+            <div>
+              <label htmlFor="ownerLastName" className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Last Name</label>
+              <input
+                {...register('ownerLastName')}
+                type="text"
+                id="ownerLastName"
+                placeholder="Doe"
+                className="block w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 transition-all"
+              />
+              {errors.ownerLastName && <p className="text-red-500 text-xs mt-1.5">{errors.ownerLastName.message}</p>}
+            </div>
           </div>
-          <p className="text-[10px] text-slate-400 mt-1">This forms the unique login route: /maple-health/dashboard</p>
-          {errors.slug && <p className="text-red-500 text-xs mt-1.5">{errors.slug.message}</p>}
+
+          <div>
+            <label htmlFor="ownerEmail" className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Email Address</label>
+            <input
+              {...register('ownerEmail')}
+              type="email"
+              id="ownerEmail"
+              placeholder="owner@maple-health.com"
+              className="block w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 transition-all"
+            />
+            {errors.ownerEmail && <p className="text-red-500 text-xs mt-1.5">{errors.ownerEmail.message}</p>}
+          </div>
+
+          <div>
+            <label htmlFor="ownerPassword" className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Password</label>
+            <input
+              {...register('ownerPassword')}
+              type="password"
+              id="ownerPassword"
+              placeholder="••••••••"
+              className="block w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 transition-all"
+            />
+            {errors.ownerPassword && <p className="text-red-500 text-xs mt-1.5">{errors.ownerPassword.message}</p>}
+          </div>
         </div>
 
         {error && (

@@ -9,6 +9,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/api/v1/auth")
 public class TenantController {
@@ -26,6 +28,12 @@ public class TenantController {
     ) {
         return ResponseEntity.status(HttpStatus.CREATED)
             .body(tenantService.createTenant(request));
+    }
+
+    @GetMapping("/tenants")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN')")
+    public ResponseEntity<List<TenantResponse>> getAllTenants() {
+        return ResponseEntity.ok(tenantService.getAllTenants());
     }
 
     @GetMapping("/tenants/{slug}")

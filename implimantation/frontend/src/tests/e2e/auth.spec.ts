@@ -46,6 +46,10 @@ test.describe('Authentication & Tenant Management E2E', () => {
     await page.locator('input#name').fill(clinicName);
     // The slug input is auto-populated via HMR event, but we can verify/fill it explicitly
     await page.locator('input#slug').fill(clinicSlug);
+    await page.locator('input#ownerFirstName').fill('John');
+    await page.locator('input#ownerLastName').fill('Doe');
+    await page.locator('input#ownerEmail').fill(`owner@${clinicSlug}.com`);
+    await page.locator('input#ownerPassword').fill('admin123');
 
     // 8. Submit the Tenant creation form
     await page.click('form button[type="submit"]');

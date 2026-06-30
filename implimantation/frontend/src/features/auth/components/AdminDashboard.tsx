@@ -4,11 +4,14 @@ import { useDispatch } from 'react-redux';
 import { logout } from '../slice';
 import { useNavigate } from 'react-router-dom';
 import { LogOut, Activity, Database, Server, Cpu } from 'lucide-react';
+import { useGetTenantsQuery } from '../api';
 
 export function AdminDashboard() {
   const { user } = useAuth();
   const dispatch = useDispatch();
   const navigate = useNavigate();
+
+  const { data: tenants = [], isLoading } = useGetTenantsQuery();
 
   const handleLogout = () => {
     dispatch(logout());
@@ -83,19 +86,48 @@ export function AdminDashboard() {
           </div>
 
           <div className="p-6 rounded-2xl bg-white border border-slate-200/80 shadow-xl shadow-slate-100/50">
-            <h3 className="text-lg font-bold text-slate-800 mb-3">System Log Events</h3>
-            <div className="space-y-3.5 text-xs">
-              <div className="p-3 bg-slate-50 border border-slate-100 rounded-lg flex items-center justify-between">
-                <span className="text-slate-500 font-mono">[2026-06-25 21:05:40]</span>
-                <span className="text-blue-600 font-semibold uppercase text-[10px] bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded">INFO</span>
-                <span className="text-slate-600 flex-1 ml-4 text-left">Spring Boot Application started successfully</span>
+            <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center">
+              <Database className="w-5 h-5 mr-2.5 text-teal-600" /> Registered Tenants ({tenants.length})
+            </h3>
+            
+            {isLoading ? (
+              <p className="text-slate-400 text-sm italic">Loading tenants...</p>
+            ) : tenants.length === 0 ? (
+              <p className="text-slate-400 text-sm italic">No tenants registered yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-100 text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                      <th className="py-3 px-4">Clinic Name</th>
+                      <th className="py-3 px-4">Domain Slug</th>
+                      <th className="py-3 px-4">Status</th>
+                      <th className="py-3 px-4">Created At</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50 text-sm text-slate-700">
+                    {tenants.map((t) => (
+                      <tr key={t.tenantId} className="hover:bg-slate-50/50 transition-colors">
+                        <td className="py-3.5 px-4 font-semibold text-slate-800">{t.name}</td>
+                        <td className="py-3.5 px-4 font-mono text-xs text-slate-500">/{t.slug}</td>
+                        <td className="py-3.5 px-4">
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-100 uppercase tracking-wider">
+                            {t.status}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-slate-500 text-xs">
+                          {new Date(t.createdAt).toLocaleDateString(undefined, {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                          })}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-              <div className="p-3 bg-slate-50 border border-slate-100 rounded-lg flex items-center justify-between">
-                <span className="text-slate-500 font-mono">[2026-06-25 21:05:40]</span>
-                <span className="text-emerald-600 font-semibold uppercase text-[10px] bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">INFO</span>
-                <span className="text-slate-600 flex-1 ml-4 text-left">Flyway schema migrations verified - 2 migrations applied</span>
-              </div>
-            </div>
+            )}
           </div>
         </div>
       </div>

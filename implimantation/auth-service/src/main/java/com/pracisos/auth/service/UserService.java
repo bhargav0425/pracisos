@@ -43,12 +43,12 @@ public class UserService {
             throw new RuntimeException("Email already registered");
         }
 
-        String tempPassword = UUID.randomUUID().toString().substring(0, 12);
+        String tempPassword = "admin123";
         String passwordHash = passwordEncoder.encode(tempPassword);
 
         User user = new User(tenant, request.email(), passwordHash,
             request.firstName(), request.lastName(), request.role());
-        user.setStatus(UserStatus.INVITED);
+        user.setStatus(UserStatus.ACTIVE);
         user = userRepository.save(user);
 
         eventPublisher.publishUserCreated(new UserCreatedPayload(
