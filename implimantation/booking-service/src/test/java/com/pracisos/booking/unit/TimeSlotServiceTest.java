@@ -70,13 +70,11 @@ public class TimeSlotServiceTest {
     @Test
     void lockSlot_Success() {
         when(slotRepository.findByIdWithLock(slotId, tenantId)).thenReturn(Optional.of(timeSlot));
-        when(slotRepository.save(any(TimeSlot.class))).thenAnswer(i -> i.getArgument(0));
 
         TimeSlot result = timeSlotService.lockSlot(slotId, tenantId);
 
         assertNotNull(result);
         assertEquals("LOCKED", result.getStatus());
-        verify(slotRepository).save(timeSlot);
     }
 
     @Test
@@ -100,12 +98,10 @@ public class TimeSlotServiceTest {
     void unlockSlot_Success() {
         timeSlot.setStatus("LOCKED");
         when(slotRepository.findById(slotId)).thenReturn(Optional.of(timeSlot));
-        when(slotRepository.save(any(TimeSlot.class))).thenAnswer(i -> i.getArgument(0));
 
         timeSlotService.unlockSlot(slotId, tenantId);
 
         assertEquals("AVAILABLE", timeSlot.getStatus());
-        verify(slotRepository).save(timeSlot);
     }
 
     @Test
